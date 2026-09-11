@@ -1,7 +1,8 @@
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import { useState } from "react";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useCallback, useState } from "react";
 import {
   Alert,
   Button,
@@ -12,10 +13,17 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { getAllTasks, insertTask } from "../../hooks/db";
+import { getAllTasks, insertTask, updateTask } from "../../hooks/db"; // Проверьте пути
 import { Task, TaskAttachment, TaskStatus } from "../../hooks/types";
 
-export default function CreateTaskScreen() {
+const STATUSES: TaskStatus[] = ["New", "In Progress", "Completed", "Canceled"];
+
+export default function TaskFormScreen() {
+  const router = useRouter();
+  const { editId } = useLocalSearchParams<{ editId?: string }>(); // Получаем ID, если пришли редактировать
+  const isEditMode = !!editId;
+
+  // Состояния полей формы
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [address, setAddress] = useState("");
@@ -23,35 +31,68 @@ export default function CreateTaskScreen() {
   const [status, setStatus] = useState<TaskStatus>("New");
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
 
+  // Контроль UI
   const [pickerMode, setPickerMode] = useState<"date" | "time" | null>(null);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
+
+  // Каждый раз при заходе на экран проверяем, не пришли ли мы редактировать
+  useFocusEffect(
+    useCallback(() => {
+      if (editId) {
+        const loadTaskData = async () => {
+          try {
+            const allTasks = await getAllTasks();
+            const currentTask = allTasks.find((t) => t.id === editId);
+
+            if (currentTask) {
+              setTitle(currentTask.title);
+              setDescription(currentTask.description);
+              setAddress(currentTask.location.address);
+              setDueDate(new Date(currentTask.dueDate));
+              setStatus(currentTask.status);
+              setAttachments(currentTask.attachments);
+            }
+          } catch (e) {
+            console.error("Ошибка предзагрузки задачи:", e);
+          }
+        };
+        loadTaskData();
+      }
+    }, [editId]),
+  );
+
+  const resetForm = () => {
+    setTitle("");
+    setDescription("");
+    setAddress("");
+    setDueDate(new Date());
+    setStatus("New");
+    setAttachments([]);
+    setErrors({});
+    // Важно: очищаем параметры роута, чтобы выйти из режима редактирования при следующем заходе
+    router.setParams({ editId: undefined });
+  };
 
   const handlePickerValueChange = (event: any, selectedDate?: Date) => {
     if (!selectedDate) {
       setPickerMode(null);
       return;
     }
+    const updatedDate = new Date(dueDate);
 
     if (pickerMode === "date") {
-      const updatedDate = new Date(dueDate);
-      updatedDate.setFullYear(selectedDate.getFullYear());
-      updatedDate.setMonth(selectedDate.getMonth());
-      updatedDate.setDate(selectedDate.getDate());
+      updatedDate.setFullYear(
+        selectedDate.getFullYear(),
+        selectedDate.getMonth(),
+        selectedDate.getDate(),
+      );
       setDueDate(updatedDate);
-
       setPickerMode("time");
     } else if (pickerMode === "time") {
-      const updatedDate = new Date(dueDate);
-      updatedDate.setHours(selectedDate.getHours());
-      updatedDate.setMinutes(selectedDate.getMinutes());
+      updatedDate.setHours(selectedDate.getHours(), selectedDate.getMinutes());
       setDueDate(updatedDate);
-
       setPickerMode(null);
     }
-  };
-
-  const handlePickerDismiss = () => {
-    setPickerMode(null);
   };
 
   const pickImage = async () => {
@@ -60,16 +101,17 @@ export default function CreateTaskScreen() {
       allowsEditing: true,
       quality: 1,
     });
-
     if (!result.canceled && result.assets && result.assets.length > 0) {
       const asset = result.assets[0];
-      const newAttachment: TaskAttachment = {
-        id: Math.random().toString(),
-        uri: asset.uri,
-        name: asset.fileName || `image_${Date.now()}.jpg`,
-        type: "image",
-      };
-      setAttachments([...attachments, newAttachment]);
+      setAttachments([
+        ...attachments,
+        {
+          id: Math.random().toString(),
+          uri: asset.uri,
+          name: asset.fileName || `img_${Date.now()}.jpg`,
+          type: "image",
+        },
+      ]);
     }
   };
 
@@ -77,22 +119,22 @@ export default function CreateTaskScreen() {
     const result = await DocumentPicker.getDocumentAsync({
       type: "application/pdf",
     });
-
     if (!result.canceled && result.assets && result.assets.length > 0) {
       const asset = result.assets[0];
-      const newAttachment: TaskAttachment = {
-        id: Math.random().toString(),
-        uri: asset.uri,
-        name: asset.name,
-        type: "pdf",
-      };
-      setAttachments([...attachments, newAttachment]);
+      setAttachments([
+        ...attachments,
+        {
+          id: Math.random().toString(),
+          uri: asset.uri,
+          name: asset.name,
+          type: "pdf",
+        },
+      ]);
     }
   };
 
   const handleSave = async () => {
     const currentErrors: { [key: string]: string } = {};
-
     if (!title.trim()) currentErrors.title = "Название задачи обязательно";
     if (!description.trim())
       currentErrors.description = "Описание задачи обязательно";
@@ -104,11 +146,9 @@ export default function CreateTaskScreen() {
       return;
     }
 
-    setErrors({});
-
-    // Формируем объект
-    const newTask: Task = {
-      id: Math.random().toString(36).substring(7),
+    const taskData: Task = {
+      id:
+        isEditMode && editId ? editId : Math.random().toString(36).substring(7),
       title: title.trim(),
       description: description.trim(),
       dueDate: dueDate.toISOString(),
@@ -118,24 +158,18 @@ export default function CreateTaskScreen() {
     };
 
     try {
-      await insertTask(newTask);
-
-      Alert.alert("Успех", `Задача успешно сохранена в базу данных!`);
-      const savedTasks = await getAllTasks();
-      console.log("--- ВСЕ ЗАДАЧИ В БД НА ДАННЫЙ МОМЕНТ: ---", savedTasks);
-
-      setTitle("");
-      setDescription("");
-      setAddress("");
-      setDueDate(new Date());
-      setAttachments([]);
-      setStatus("New");
+      if (isEditMode) {
+        await updateTask(taskData);
+        Alert.alert("Успех", "Задача успешно обновлена!");
+      } else {
+        await insertTask(taskData);
+        Alert.alert("Успех", "Задача успешно создана!");
+      }
+      resetForm();
+      router.replace("/(tabs)/taskListFragment");
     } catch (error) {
-      console.error("Ошибка сохранения задачи:", error);
-      Alert.alert(
-        "Ошибка",
-        "Не удалось сохранить задачу в локальное хранилище.",
-      );
+      console.error(error);
+      Alert.alert("Ошибка", "Не удалось сохранить изменения.");
     }
   };
 
@@ -144,15 +178,17 @@ export default function CreateTaskScreen() {
       style={styles.container}
       contentContainerStyle={styles.contentContainer}
     >
-      <Text style={styles.header}>Создание задачи</Text>
+      <Text style={styles.header}>
+        {isEditMode ? "Редактирование задачи" : "Создание задачи"}
+      </Text>
 
       {/* Поле: Название */}
       <Text style={styles.label}>Название *</Text>
       <TextInput
-        style={[styles.input, errors.title ? styles.inputError : null]}
+        style={[styles.input, errors.title && styles.inputError]}
         value={title}
         onChangeText={setTitle}
-        placeholder="Введите название задачи"
+        placeholder="Введите название"
       />
       {errors.title && <Text style={styles.errorText}>{errors.title}</Text>}
 
@@ -162,11 +198,11 @@ export default function CreateTaskScreen() {
         style={[
           styles.input,
           styles.textArea,
-          errors.description ? styles.inputError : null,
+          errors.description && styles.inputError,
         ]}
         value={description}
         onChangeText={setDescription}
-        placeholder="Введите описание задачи"
+        placeholder="Введите описание"
         multiline
         numberOfLines={4}
       />
@@ -177,7 +213,7 @@ export default function CreateTaskScreen() {
       {/* Поле: Местоположение */}
       <Text style={styles.label}>Адрес *</Text>
       <TextInput
-        style={[styles.input, errors.address ? styles.inputError : null]}
+        style={[styles.input, errors.address && styles.inputError]}
         value={address}
         onChangeText={setAddress}
         placeholder="Укажите адрес вручную"
@@ -188,12 +224,11 @@ export default function CreateTaskScreen() {
       <Text style={styles.label}>Срок выполнения *</Text>
       <TouchableOpacity
         style={styles.dateButton}
-        onPress={() => setPickerMode("date")} // Начинаем с выбора даты
+        onPress={() => setPickerMode("date")}
       >
         <Text style={styles.dateButtonText}>{dueDate.toLocaleString()}</Text>
       </TouchableOpacity>
 
-      {/* Рендерим пикер, только если задан режим 'date' или 'time' */}
       {pickerMode !== null && (
         <DateTimePicker
           value={dueDate}
@@ -201,9 +236,33 @@ export default function CreateTaskScreen() {
           display="default"
           is24Hour={true}
           onValueChange={handlePickerValueChange}
-          onDismiss={handlePickerDismiss}
+          onDismiss={() => setPickerMode(null)}
         />
       )}
+
+      {/* Выбор Статуса — Показываем селектор всегда, но для новой задачи по умолчанию 'New' */}
+      <Text style={styles.label}>Статус задачи</Text>
+      <View style={styles.statusContainer}>
+        {STATUSES.map((s) => (
+          <TouchableOpacity
+            key={s}
+            style={[
+              styles.statusButton,
+              status === s ? styles.statusButtonActive : null,
+            ]}
+            onPress={() => setStatus(s)}
+          >
+            <Text
+              style={[
+                styles.statusButtonText,
+                status === s ? styles.statusButtonTextActive : null,
+              ]}
+            >
+              {s}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
 
       {/* Вложения */}
       <Text style={styles.label}>Вложения (Изображения / PDF)</Text>
@@ -226,10 +285,23 @@ export default function CreateTaskScreen() {
         </View>
       )}
 
-      {/* Кнопка Сохранить */}
-      <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-        <Text style={styles.saveButtonText}>Создать задачу</Text>
+      {/* Кнопка Сохранить/Обновить */}
+      <TouchableOpacity
+        style={[styles.saveButton, isEditMode && styles.updateButton]}
+        onPress={handleSave}
+      >
+        <Text style={styles.saveButtonText}>
+          {isEditMode ? "Сохранить изменения" : "Создать задачу"}
+        </Text>
       </TouchableOpacity>
+
+      {isEditMode && (
+        <TouchableOpacity style={styles.cancelEditButton} onPress={resetForm}>
+          <Text style={styles.cancelEditButtonText}>
+            Отменить редактирование
+          </Text>
+        </TouchableOpacity>
+      )}
     </ScrollView>
   );
 }
@@ -271,6 +343,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   dateButtonText: { fontSize: 16, color: "#333" },
+  statusContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 5,
+  },
+  statusButton: {
+    borderWidth: 1,
+    borderColor: "#ccc",
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#fff",
+  },
+  statusButtonActive: { backgroundColor: "#2ecc71", borderColor: "#2ecc71" },
+  statusButtonText: { color: "#555", fontSize: 13, fontWeight: "600" },
+  statusButtonTextActive: { color: "#fff" },
   attachButtonsRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -293,5 +382,8 @@ const styles = StyleSheet.create({
     marginTop: 30,
     elevation: 2,
   },
+  updateButton: { backgroundColor: "#3498db" },
   saveButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
+  cancelEditButton: { padding: 15, alignItems: "center", marginTop: 10 },
+  cancelEditButtonText: { color: "#e74c3c", fontSize: 16, fontWeight: "600" },
 });

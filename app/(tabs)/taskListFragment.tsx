@@ -1,19 +1,20 @@
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import {
   FlatList,
-  SafeAreaView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { getAllTasks } from "../../hooks/db";
 import { Task } from "../../hooks/types";
 
 export default function TasksListScreen() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const router = useRouter();
 
   // Аналог onResume() в Android
   useFocusEffect(
@@ -65,7 +66,12 @@ export default function TasksListScreen() {
     return (
       <TouchableOpacity
         style={styles.taskCard}
-        onPress={() => console.log("Нажата задача:", item.id)}
+        onPress={() => {
+          router.push({
+            pathname: "/(tabs)/taskCreationFragment",
+            params: { editId: item.id },
+          });
+        }}
       >
         <View style={styles.cardHeader}>
           <Text style={styles.taskTitle} numberOfLines={1}>

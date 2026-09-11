@@ -104,3 +104,39 @@ export const getAllTasks = async (): Promise<Task[]> => {
 
   return tasks;
 };
+
+/**
+ * Обновление существующей задачи в SQLite (с перезаписью вложений)
+ */
+export const updateTask = async (task: Task): Promise<void> => {
+  const db = await SQLite.openDatabaseAsync("rnscheduling.db");
+
+  await db.withTransactionAsync(async () => {
+    // 1. Обновляем основные поля задачи
+    await db.runAsync(
+      `UPDATE tasks 
+       SET title = ?, description = ?, dueDate = ?, address = ?, latitude = ?, longitude = ?, status = ?
+       WHERE id = ?;`,
+      [
+        task.title,
+        task.description,
+        task.dueDate,
+        task.location.address,
+        task.location.latitude ?? null,
+        task.location.longitude ?? null,
+        task.status,
+        task.id,
+      ],
+    );
+
+    // 2. Самый простой способ обновить вложения — удалить старые для этой задачи и записать новые
+    await db.runAsync("DELETE FROM attachments WHERE task_id = ?;", [task.id]);
+
+    for (const attach of task.attachments) {
+      await db.runAsync(
+        `INSERT INTO attachments (id, task_id, uri, name, type) VALUES (?, ?, ?, ?, ?);`,
+        [attach.id, task.id, attach.uri, attach.name, attach.type],
+      );
+    }
+  });
+};
