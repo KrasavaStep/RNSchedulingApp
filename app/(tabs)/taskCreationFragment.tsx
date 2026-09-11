@@ -13,6 +13,10 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import {
+  syncInsertTaskWithServer,
+  syncUpdateTaskWithServer,
+} from "../../hooks/api";
 import { getAllTasks, insertTask, updateTask } from "../../hooks/db"; // Проверьте пути
 import { Task, TaskAttachment, TaskStatus } from "../../hooks/types";
 
@@ -29,6 +33,7 @@ export default function TaskFormScreen() {
   const [address, setAddress] = useState("");
   const [dueDate, setDueDate] = useState<Date>(new Date());
   const [status, setStatus] = useState<TaskStatus>("New");
+  const [originalStatus, setOriginalStatus] = useState<TaskStatus>("New");
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
 
   // Контроль UI
@@ -50,6 +55,7 @@ export default function TaskFormScreen() {
               setAddress(currentTask.location.address);
               setDueDate(new Date(currentTask.dueDate));
               setStatus(currentTask.status);
+              setOriginalStatus(currentTask.status);
               setAttachments(currentTask.attachments);
             }
           } catch (e) {
@@ -159,17 +165,34 @@ export default function TaskFormScreen() {
 
     try {
       if (isEditMode) {
-        await updateTask(taskData);
-        Alert.alert("Успех", "Задача успешно обновлена!");
+        // 1. Обновляем локально в SQLite
+        await updateTask(taskData, originalStatus);
+
+        // 2. Синхронизируем с REST API сервера
+        await syncUpdateTaskWithServer(taskData);
+
+        Alert.alert("Успех", "Задача обновлена локально и на сервере!");
       } else {
+        // 1. Сохраняем локально в SQLite
         await insertTask(taskData);
-        Alert.alert("Успех", "Задача успешно создана!");
+
+        // 2. Синхронизируем с REST API сервера
+        await syncInsertTaskWithServer(taskData);
+
+        Alert.alert("Успех", "Задача создана локально и на сервере!");
       }
       resetForm();
       router.replace("/(tabs)/taskListFragment");
     } catch (error) {
+      // Если упала сеть, данные в SQLite всё равно сохранились!
       console.error(error);
-      Alert.alert("Ошибка", "Не удалось сохранить изменения.");
+      Alert.alert(
+        "Частичный успех",
+        "Данные сохранены локально, но не удалось отправить их на сервер (офлайн-режим).",
+      );
+      // Всё равно закрываем форму, так как локально всё записано
+      resetForm();
+      router.replace("/(tabs)/taskListFragment");
     }
   };
 

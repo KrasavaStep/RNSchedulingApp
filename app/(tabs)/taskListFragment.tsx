@@ -11,39 +11,50 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { getAllTasks } from "../../hooks/db";
 import { Task } from "../../hooks/types";
 
-export default function TasksListScreen() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const router = useRouter();
+type SortOption = "createdAt" | "dueDate" | "status";
 
-  // Аналог onResume() в Android
+export default function TasksListScreen() {
+  const router = useRouter();
+  const [tasks, setTasks] = useState<(Task & { createdAt: string })[]>([]);
+  const [sortBy, setSortBy] = useState<SortOption>("createdAt");
+  const [isLoading, setIsLoading] = useState(true);
+
+  const loadTasks = async () => {
+    try {
+      setIsLoading(true);
+      const data = await getAllTasks();
+      setTasks(data);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useFocusEffect(
     useCallback(() => {
-      let isMounted = true;
-
-      const fetchTasks = async () => {
-        try {
-          setIsLoading(true);
-          const data = await getAllTasks();
-          if (isMounted) {
-            setTasks(data);
-          }
-        } catch (error) {
-          console.error("Ошибка при загрузке задач из SQLite:", error);
-        } finally {
-          if (isMounted) setIsLoading(false);
-        }
-      };
-
-      fetchTasks();
-
-      return () => {
-        isMounted = false;
-      };
+      loadTasks();
     }, []),
   );
 
-  // Функция для отрисовки хелперов статуса (цветовые маркеры)
+  // Функция сортировки на стороне клиента (JS/TS)
+  const getSortedTasks = () => {
+    return [...tasks].sort((a, b) => {
+      if (sortBy === "createdAt") {
+        return (
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        ); // Сначала новые
+      }
+      if (sortBy === "dueDate") {
+        return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime(); // Сначала срочные
+      }
+      if (sortBy === "status") {
+        return a.status.localeCompare(b.status); // Сгруппировать по алфавиту статуса
+      }
+      return 0;
+    });
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case "New":
@@ -59,75 +70,86 @@ export default function TasksListScreen() {
     }
   };
 
-  //Аналог ViewHolder в RecyclerView
-  const renderTaskItem = ({ item }: { item: Task }) => {
-    const formattedDate = new Date(item.dueDate).toLocaleString();
-
-    return (
-      <TouchableOpacity
-        style={styles.taskCard}
-        onPress={() => {
-          router.push({
-            pathname: "/(tabs)/taskCreationFragment",
-            params: { editId: item.id },
-          });
-        }}
-      >
-        <View style={styles.cardHeader}>
-          <Text style={styles.taskTitle} numberOfLines={1}>
-            {item.title}
-          </Text>
-          <View
-            style={[
-              styles.statusBadge,
-              { backgroundColor: getStatusColor(item.status) },
-            ]}
-          >
-            <Text style={styles.statusText}>{item.status}</Text>
-          </View>
-        </View>
-
-        <Text style={styles.taskDescription} numberOfLines={2}>
-          {item.description}
-        </Text>
-
-        <View style={styles.cardFooter}>
-          <Text style={styles.footerText}>📅 {formattedDate}</Text>
-          <Text style={styles.footerText} numberOfLines={1}>
-            📍 {item.location.address}
-          </Text>
-        </View>
-
-        {item.attachments.length > 0 && (
-          <Text style={styles.attachmentsCount}>
-            📎 Вложений: {item.attachments.length}
-          </Text>
-        )}
-      </TouchableOpacity>
-    );
-  };
-
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.header}>Список задач</Text>
 
-      {tasks.length === 0 && !isLoading ? (
+      {/* Панель сортировки */}
+      <View style={styles.sortContainer}>
+        <Text style={styles.sortLabel}>Сортировка:</Text>
+        {(["createdAt", "dueDate", "status"] as SortOption[]).map((option) => (
+          <TouchableOpacity
+            key={option}
+            style={[
+              styles.sortButton,
+              sortBy === option && styles.sortButtonActive,
+            ]}
+            onPress={() => setSortBy(option)}
+          >
+            <Text
+              style={[
+                styles.sortButtonText,
+                sortBy === option && styles.sortButtonTextActive,
+              ]}
+            >
+              {option === "createdAt"
+                ? "Создан"
+                : option === "dueDate"
+                  ? "Срок"
+                  : "Статус"}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {getSortedTasks().length === 0 && !isLoading ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyText}>
-            Задач пока нет. Создайте первую на соседней вкладке!
+            Задач нет. Создайте первую на соседней вкладке!
           </Text>
         </View>
       ) : (
         <FlatList
-          data={tasks}
+          data={getSortedTasks()}
           keyExtractor={(item) => item.id}
-          renderItem={renderTaskItem}
-          contentContainerStyle={styles.listContent}
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={styles.taskCard}
+              onPress={() => {
+                router.push({
+                  pathname: "/taskDetailFragment",
+                  params: { id: item.id },
+                });
+              }}
+            >
+              <View style={styles.cardHeader}>
+                <Text style={styles.taskTitle} numberOfLines={1}>
+                  {item.title}
+                </Text>
+                <View
+                  style={[
+                    styles.statusBadge,
+                    { backgroundColor: getStatusColor(item.status) },
+                  ]}
+                >
+                  <Text style={styles.statusText}>{item.status}</Text>
+                </View>
+              </View>
+              <Text style={styles.taskDescription} numberOfLines={2}>
+                {item.description}
+              </Text>
+              <View style={styles.cardFooter}>
+                <Text style={styles.footerText}>
+                  📅 Срок: {new Date(item.dueDate).toLocaleString()}
+                </Text>
+                <Text style={styles.footerText} numberOfLines={1}>
+                  📍 {item.location.address}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          )}
           refreshing={isLoading}
-          onRefresh={async () => {
-            const data = await getAllTasks();
-            setTasks(data);
-          }}
+          onRefresh={loadTasks}
         />
       )}
     </SafeAreaView>
@@ -139,21 +161,34 @@ const styles = StyleSheet.create({
   header: {
     fontSize: 24,
     fontWeight: "bold",
-    marginVertical: 20,
+    marginTop: 15,
     textAlign: "center",
     color: "#333",
   },
-  listContent: { paddingHorizontal: 16, paddingBottom: 20 },
+  sortContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    marginVertical: 10,
+    gap: 6,
+  },
+  sortLabel: { fontSize: 13, color: "#666", fontWeight: "600" },
+  sortButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    backgroundColor: "#e0e0e0",
+  },
+  sortButtonActive: { backgroundColor: "#3498db" },
+  sortButtonText: { fontSize: 12, color: "#555", fontWeight: "bold" },
+  sortButtonTextActive: { color: "#fff" },
   taskCard: {
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 16,
+    marginHorizontal: 16,
     marginBottom: 12,
     elevation: 2,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 1.41,
   },
   cardHeader: {
     flexDirection: "row",
@@ -162,40 +197,28 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   taskTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: "bold",
     color: "#333",
     flex: 1,
     marginRight: 10,
   },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  statusText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
-  taskDescription: { fontSize: 14, color: "#666", marginBottom: 12 },
+  statusText: { color: "#fff", fontSize: 11, fontWeight: "bold" },
+  taskDescription: { fontSize: 14, color: "#666", marginBottom: 10 },
   cardFooter: {
     borderTopWidth: 1,
     borderTopColor: "#eee",
     paddingTop: 8,
-    flexDirection: "column",
-    gap: 4,
+    gap: 2,
   },
-  footerText: { fontSize: 13, color: "#888" },
-  attachmentsCount: {
-    fontSize: 12,
-    color: "#4A90E2",
-    marginTop: 6,
-    fontWeight: "600",
-  },
+  footerText: { fontSize: 12, color: "#888" },
   emptyContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 40,
     marginTop: 100,
+    paddingHorizontal: 40,
   },
-  emptyText: {
-    fontSize: 16,
-    color: "#999",
-    textAlign: "center",
-    lineHeight: 22,
-  },
+  emptyText: { fontSize: 15, color: "#999", textAlign: "center" },
 });
