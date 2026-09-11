@@ -1,6 +1,9 @@
 import { Link, Tabs } from "expo-router";
 import { SymbolView } from "expo-symbols";
+import { useEffect } from "react";
 import { Pressable } from "react-native";
+
+import { initDatabase } from "../../hooks/db";
 
 import { useClientOnlyValue } from "@/components/useClientOnlyValue";
 import { useColorScheme } from "@/components/useColorScheme";
@@ -8,6 +11,14 @@ import Colors from "@/constants/Colors";
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+
+  useEffect(() => {
+    initDatabase()
+      .then(() => console.log("SQLite успешно готов к работе"))
+      .catch((err) =>
+        console.error("Критическая ошибка инициализации SQLite:", err),
+      );
+  }, []);
 
   return (
     <Tabs
@@ -50,9 +61,9 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="two"
+        name="taskListFragment"
         options={{
-          title: "Tab Two",
+          title: "Task List",
           tabBarIcon: ({ color }) => (
             <SymbolView
               name={{

@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { getAllTasks, insertTask } from "../../hooks/db";
 import { Task, TaskAttachment, TaskStatus } from "../../hooks/types";
 
 export default function CreateTaskScreen() {
@@ -89,7 +90,7 @@ export default function CreateTaskScreen() {
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const currentErrors: { [key: string]: string } = {};
 
     if (!title.trim()) currentErrors.title = "Название задачи обязательно";
@@ -105,8 +106,9 @@ export default function CreateTaskScreen() {
 
     setErrors({});
 
+    // Формируем объект
     const newTask: Task = {
-      id: Math.random().toString(), // Временно, пока нет сервера
+      id: Math.random().toString(36).substring(7),
       title: title.trim(),
       description: description.trim(),
       dueDate: dueDate.toISOString(),
@@ -115,11 +117,26 @@ export default function CreateTaskScreen() {
       status,
     };
 
-    Alert.alert(
-      "Успех",
-      `Задача "${newTask.title}" валидирована и готова к сохранению!`,
-    );
-    console.log("Сформированная задача:", newTask);
+    try {
+      await insertTask(newTask);
+
+      Alert.alert("Успех", `Задача успешно сохранена в базу данных!`);
+      const savedTasks = await getAllTasks();
+      console.log("--- ВСЕ ЗАДАЧИ В БД НА ДАННЫЙ МОМЕНТ: ---", savedTasks);
+
+      setTitle("");
+      setDescription("");
+      setAddress("");
+      setDueDate(new Date());
+      setAttachments([]);
+      setStatus("New");
+    } catch (error) {
+      console.error("Ошибка сохранения задачи:", error);
+      Alert.alert(
+        "Ошибка",
+        "Не удалось сохранить задачу в локальное хранилище.",
+      );
+    }
   };
 
   return (
@@ -180,11 +197,11 @@ export default function CreateTaskScreen() {
       {pickerMode !== null && (
         <DateTimePicker
           value={dueDate}
-          mode={pickerMode} // Передаем строго 'date' или 'time', никакого 'datetime'
+          mode={pickerMode}
           display="default"
-          is24Hour={true} // Удобно для нашего региона
-          onValueChange={handlePickerValueChange} // Современный метод вместо onChange
-          onDismiss={handlePickerDismiss} // Безопасное закрытие при клике мимо
+          is24Hour={true}
+          onValueChange={handlePickerValueChange}
+          onDismiss={handlePickerDismiss}
         />
       )}
 
