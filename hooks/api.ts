@@ -5,8 +5,9 @@ const API_URL = "https://6aa515b61397053d42bb7203.mockapi.io/taskapi/v1/tasks";
 
 /**
  * Отправка новой задачи на удаленный сервер (POST)
+ * Возвращает созданный сервером ID (строку)
  */
-export const syncInsertTaskWithServer = async (task: Task): Promise<void> => {
+export const syncInsertTaskWithServer = async (task: Task): Promise<string> => {
   try {
     const response = await fetch(API_URL, {
       method: "POST",
@@ -15,9 +16,15 @@ export const syncInsertTaskWithServer = async (task: Task): Promise<void> => {
     });
 
     if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
+
+    // Получаем тело ответа от MockAPI. Там будет объект задачи с правильным ID от сервера!
+    const serverTask = await response.json();
     console.log(
-      "⚡ Задача успешно синхронизирована с ОБЛАЧНЫМ сервером (POST)",
+      "⚡ Задача синхронизирована с MockAPI. Серверный ID:",
+      serverTask.id,
     );
+
+    return String(serverTask.id); // Возвращаем серверный ID (например, "1")
   } catch (error) {
     console.error("❌ Не удалось отправить задачу на сервер:", error);
     throw error;
@@ -29,6 +36,8 @@ export const syncInsertTaskWithServer = async (task: Task): Promise<void> => {
  */
 export const syncUpdateTaskWithServer = async (task: Task): Promise<void> => {
   try {
+    console.log(`${API_URL}/${task.id}`);
+    console.log(JSON.stringify(task));
     // В MockAPI / Supabase стандартный REST-путь для обновления конкретной записи: URL/id
     const response = await fetch(`${API_URL}/${task.id}`, {
       method: "PUT",

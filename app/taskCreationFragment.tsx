@@ -2,13 +2,14 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useSQLiteContext } from "expo-sqlite"; // 1. Импортируем нативный контекст
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Button,
   ScrollView,
-  StyleSheet, // Добавлено
+  StyleSheet,
   Switch,
   Text,
   TextInput,
@@ -24,16 +25,18 @@ import {
   insertLog,
   insertTask,
   updateTask,
+  updateTaskIdInLocalDB,
   updateTaskSyncStatus,
-} from "../hooks/db"; // Проверьте пути
-import { scheduleTaskNotification } from "../hooks/notifications"; // Импорт сервиса пушей
+} from "../hooks/db";
+import { scheduleTaskNotification } from "../hooks/notifications";
 import { Task, TaskAttachment, TaskStatus } from "../hooks/types";
 
 const STATUSES: TaskStatus[] = ["New", "In Progress", "Completed", "Canceled"];
 
 export default function TaskFormScreen() {
+  const db = useSQLiteContext(); // 2. Инициализируем нативный инстанс БД
   const router = useRouter();
-  const { editId } = useLocalSearchParams<{ editId?: string }>(); // Получаем ID, если пришли редактировать
+  const { editId } = useLocalSearchParams<{ editId?: string }>();
   const isEditMode = !!editId;
 
   // Состояния полей формы
@@ -49,18 +52,18 @@ export default function TaskFormScreen() {
   const [pickerMode, setPickerMode] = useState<"date" | "time" | null>(null);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
 
-  const [isNetworkLoading, setIsNetworkLoading] = useState(false); // Для лоадера сохранения
-  const [isDemoMode, setIsDemoMode] = useState(false); // Чекбокс демо-пуша
-  const [lat, setLat] = useState(""); // Координаты вручную
+  const [isNetworkLoading, setIsNetworkLoading] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
 
-  // Каждый раз при заходе на экран проверяем, не пришли ли мы редактировать
   useFocusEffect(
     useCallback(() => {
       if (editId) {
         const loadTaskData = async () => {
           try {
-            const allTasks = await getAllTasks();
+            // Передаем db в метод чтения
+            const allTasks = await getAllTasks(db);
             const currentTask = allTasks.find((t) => t.id === editId);
 
             if (currentTask) {
@@ -71,6 +74,10 @@ export default function TaskFormScreen() {
               setStatus(currentTask.status);
               setOriginalStatus(currentTask.status);
               setAttachments(currentTask.attachments);
+              if (currentTask.location.latitude)
+                setLat(String(currentTask.location.latitude));
+              if (currentTask.location.longitude)
+                setLon(String(currentTask.location.longitude));
             }
           } catch (e) {
             console.error("Ошибка предзагрузки задачи:", e);
@@ -78,7 +85,7 @@ export default function TaskFormScreen() {
         };
         loadTaskData();
       }
-    }, [editId]),
+    }, [editId, db]),
   );
 
   const resetForm = () => {
@@ -89,7 +96,8 @@ export default function TaskFormScreen() {
     setStatus("New");
     setAttachments([]);
     setErrors({});
-    // Важно: очищаем параметры роута, чтобы выйти из режима редактирования при следующем заходе
+    setLat("");
+    setLon("");
     router.setParams({ editId: undefined });
   };
 
@@ -184,67 +192,89 @@ export default function TaskFormScreen() {
       },
       attachments,
       status,
-      syncStatus: "Pending Sync", // По умолчанию ставим статус ожидания
+      syncStatus: "Pending Sync",
     };
 
     try {
-      // 1. Блокируем UI, показываем ActivityIndicator по ТЗ
       setIsNetworkLoading(true);
 
-      // 2. Сохраняем локально в SQLite (работает мгновенно в оффлайне)
       if (isEditMode) {
-        await updateTask(taskData, originalStatus);
-      } else {
-        await insertTask(taskData);
-      }
+        // Режим Редактирования (передаем db)
+        await updateTask(db, taskData);
 
-      await insertLog({
-        id: Math.random().toString(),
-        timestamp: new Date().toISOString(),
-        actionType: isEditMode ? "EDIT" : "CREATE",
-        description: `Пользователь ${isEditMode ? "отредактировал" : "создал"} задачу "${taskData.title}"`,
-      });
+        await insertLog(db, {
+          id: Math.random().toString(),
+          timestamp: new Date().toISOString(),
+          actionType: "EDIT",
+          description: `Локально отредактирована задача "${taskData.title}"`,
+        });
 
-      // 3. Планируем нативный push-уведомление
-      await scheduleTaskNotification(
-        taskData.id,
-        taskData.title,
-        taskData.dueDate,
-        isDemoMode,
-      );
-
-      // 4. Пробуем отправить по сети на MockAPI
-      try {
-        if (isEditMode) {
+        try {
           await syncUpdateTaskWithServer(taskData);
-        } else {
-          await syncInsertTaskWithServer(taskData);
+          await updateTaskSyncStatus(db, taskData.id, "Synced");
+          await insertLog(db, {
+            id: Math.random().toString(),
+            timestamp: new Date().toISOString(),
+            actionType: "SYNC",
+            description: `Успешный PUT. Изменения задачи "${taskData.title}" синхронизированы.`,
+          });
+        } catch (netError) {
+          await updateTaskSyncStatus(db, taskData.id, "Sync Failed");
         }
-        // Если сеть успешна — обновляем статус на Synced
-        await updateTaskSyncStatus(taskData.id, "Synced");
-        await insertLog({
+      } else {
+        // Режим Создания (передаем db)
+        await insertTask(db, taskData);
+
+        await insertLog(db, {
           id: Math.random().toString(),
           timestamp: new Date().toISOString(),
-          actionType: "SYNC",
-          description: `Успешная синхронизация задачи "${taskData.title}" с MockAPI`,
+          actionType: "CREATE",
+          description: `Локально создана задача "${taskData.title}" (Временный ID: ${taskData.id})`,
         });
-      } catch (netError) {
-        // Оффлайн режим по ТЗ: если сеть упала, статус остается 'Pending Sync', приложение не падает
-        await updateTaskSyncStatus(taskData.id, "Sync Failed");
-        await insertLog({
-          id: Math.random().toString(),
-          timestamp: new Date().toISOString(),
-          actionType: "SYNC",
-          description: `Сбой сети при отправке "${taskData.title}". Переведено в режим ожидания.`,
-        });
+
+        try {
+          const serverId = await syncInsertTaskWithServer(taskData);
+          await updateTaskIdInLocalDB(db, taskData.id, serverId);
+          await scheduleTaskNotification(
+            serverId,
+            taskData.title,
+            taskData.dueDate,
+            isDemoMode,
+          );
+          await updateTaskSyncStatus(db, serverId, "Synced");
+
+          await insertLog(db, {
+            id: Math.random().toString(),
+            timestamp: new Date().toISOString(),
+            actionType: "SYNC",
+            description: `Успешный POST. Задача "${taskData.title}" переведена на серверный ID: ${serverId}`,
+          });
+        } catch (netError) {
+          await updateTaskSyncStatus(db, taskData.id, "Sync Failed");
+          await scheduleTaskNotification(
+            taskData.id,
+            taskData.title,
+            taskData.dueDate,
+            isDemoMode,
+          );
+          await insertLog(db, {
+            id: Math.random().toString(),
+            timestamp: new Date().toISOString(),
+            actionType: "SYNC",
+            description: `Сбой сети при создании задачи "${taskData.title}". ID остался временным.`,
+          });
+        }
       }
 
-      Alert.alert("Успех", "Задача сохранена!");
-      router.back();
+      Alert.alert("Успех", "Задача успешно сохранена!");
+      setTimeout(() => {
+        router.back();
+      }, 150);
     } catch (error) {
+      console.error(error);
       Alert.alert("Ошибка", "Критическая ошибка БД");
     } finally {
-      setIsNetworkLoading(false); // Выключаем лоадер
+      setIsNetworkLoading(false);
     }
   };
 
@@ -253,7 +283,7 @@ export default function TaskFormScreen() {
       style={styles.container}
       contentContainerStyle={styles.contentContainer}
     >
-      {/* Если идет отправка на сервер — перекрываем экран лоадером по ТЗ */}
+      {/* Оверлей загрузки перекрывает экран при синхронизации */}
       {isNetworkLoading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#3498db" />
@@ -261,14 +291,10 @@ export default function TaskFormScreen() {
         </View>
       )}
 
-      <Text style={styles.header}>
-        {isEditMode ? "Редактирование задачи" : "Создание задачи"}
-      </Text>
-
       {/* Поле: Название */}
       <Text style={styles.label}>Название *</Text>
       <TextInput
-        style={[styles.input, errors.title && styles.inputError]}
+        style={[styles.input, errors.title ? styles.inputError : null]}
         value={title}
         onChangeText={setTitle}
         placeholder="Введите название"
@@ -281,7 +307,7 @@ export default function TaskFormScreen() {
         style={[
           styles.input,
           styles.textArea,
-          errors.description && styles.inputError,
+          errors.description ? styles.inputError : null,
         ]}
         value={description}
         onChangeText={setDescription}
@@ -293,18 +319,18 @@ export default function TaskFormScreen() {
         <Text style={styles.errorText}>{errors.description}</Text>
       )}
 
-      {/* Поле: Местоположение */}
-      <Text style={styles.label}>Адрес *</Text>
+      {/* Поле: Адрес */}
+      <Text style={styles.label}>Адрес местоположения *</Text>
       <TextInput
-        style={[styles.input, errors.address && styles.inputError]}
+        style={[styles.input, errors.address ? styles.inputError : null]}
         value={address}
         onChangeText={setAddress}
         placeholder="Укажите адрес вручную"
       />
       {errors.address && <Text style={styles.errorText}>{errors.address}</Text>}
 
-      {/* ТЗ: Ввод координат вручную (преимущество к ТЗ) */}
-      <Text style={styles.label}>Координаты места (необязательно)</Text>
+      {/* Поля: Координаты */}
+      <Text style={styles.label}>Координаты (необязательно)</Text>
       <View style={styles.rowGap}>
         <TextInput
           style={[styles.input, { flex: 1 }]}
@@ -322,7 +348,7 @@ export default function TaskFormScreen() {
         />
       </View>
 
-      {/* Поле: Срок выполнения */}
+      {/* Поле: Выбор даты дедлайна */}
       <Text style={styles.label}>Срок выполнения *</Text>
       <TouchableOpacity
         style={styles.dateButton}
@@ -342,7 +368,7 @@ export default function TaskFormScreen() {
         />
       )}
 
-      {/* Выбор Статуса — Показываем селектор всегда, но для новой задачи по умолчанию 'New' */}
+      {/* Поле: Статус задачи */}
       <Text style={styles.label}>Статус задачи</Text>
       <View style={styles.statusContainer}>
         {STATUSES.map((s) => (
@@ -366,12 +392,15 @@ export default function TaskFormScreen() {
         ))}
       </View>
 
+      {/* Поле: Демо-режим пушей */}
       <View style={styles.switchRow}>
-        <Text style={styles.label}>Тест пуша через 30 секунд (Демо)</Text>
+        <Text style={[styles.label, { marginTop: 0 }]}>
+          Тест пуша через 30 секунд (Демо)
+        </Text>
         <Switch value={isDemoMode} onValueChange={setIsDemoMode} />
       </View>
 
-      {/* Вложения */}
+      {/* Блок вложений */}
       <Text style={styles.label}>Вложения (Изображения / PDF)</Text>
       <View style={styles.attachButtonsRow}>
         <View style={styles.flexBtn}>
@@ -382,6 +411,7 @@ export default function TaskFormScreen() {
         </View>
       </View>
 
+      {/* Вывод списка прикрепленных файлов с возможностью удаления по кнопке (крестик) */}
       {attachments.length > 0 && (
         <View style={styles.attachmentsList}>
           {attachments.map((item) => (
@@ -405,9 +435,9 @@ export default function TaskFormScreen() {
         </View>
       )}
 
-      {/* Кнопка Сохранить/Обновить */}
+      {/* Финальная кнопка отправки формы */}
       <TouchableOpacity
-        style={[styles.saveButton, isEditMode && styles.updateButton]}
+        style={styles.saveButton}
         onPress={handleSave}
         disabled={isNetworkLoading}
       >
@@ -415,33 +445,18 @@ export default function TaskFormScreen() {
           {isEditMode ? "Сохранить изменения" : "Создать задачу"}
         </Text>
       </TouchableOpacity>
-
-      {isEditMode && (
-        <TouchableOpacity style={styles.cancelEditButton} onPress={resetForm}>
-          <Text style={styles.cancelEditButtonText}>
-            Отменить редактирование
-          </Text>
-        </TouchableOpacity>
-      )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f5f5f5" },
-  contentContainer: { padding: 20, paddingTop: 40 },
-  header: {
-    fontSize: 24,
-    fontWeight: "bold",
-    marginBottom: 20,
-    textAlign: "center",
-    color: "#333",
-  },
+  contentContainer: { padding: 20, paddingBottom: 40 },
   label: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "600",
-    marginTop: 15,
-    marginBottom: 5,
+    marginTop: 14,
+    marginBottom: 4,
     color: "#444",
   },
   input: {
@@ -449,18 +464,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#ddd",
     borderRadius: 8,
-    padding: 12,
+    padding: 10,
     fontSize: 16,
   },
   inputError: { borderColor: "#ff4d4d" },
-  textArea: { height: 100, textAlignVertical: "top" },
-  errorText: { color: "#ff4d4d", fontSize: 14, marginTop: 4 },
+  textArea: { height: 80, textAlignVertical: "top" },
+  errorText: { color: "#ff4d4d", fontSize: 13, marginTop: 2 },
+  rowGap: { flexDirection: "row", gap: 10, marginTop: 4 },
   dateButton: {
     backgroundColor: "#fff",
     borderWidth: 1,
     borderColor: "#ddd",
     borderRadius: 8,
-    padding: 15,
+    padding: 12,
     alignItems: "center",
   },
   dateButtonText: { fontSize: 16, color: "#333" },
@@ -468,7 +484,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    marginTop: 5,
+    marginTop: 4,
   },
   statusButton: {
     borderWidth: 1,
@@ -481,51 +497,24 @@ const styles = StyleSheet.create({
   statusButtonActive: { backgroundColor: "#2ecc71", borderColor: "#2ecc71" },
   statusButtonText: { color: "#555", fontSize: 13, fontWeight: "600" },
   statusButtonTextActive: { color: "#fff" },
+  switchRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 14,
+  },
   attachButtonsRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     gap: 10,
-    marginTop: 5,
+    marginTop: 4,
   },
   flexBtn: { flex: 1 },
   attachmentsList: {
     marginTop: 10,
     backgroundColor: "#eef2f7",
-    padding: 10,
+    padding: 8,
     borderRadius: 8,
-  },
-  attachmentItem: { fontSize: 14, color: "#555", marginVertical: 2 },
-  saveButton: {
-    backgroundColor: "#2ecc71",
-    borderRadius: 8,
-    padding: 16,
-    alignItems: "center",
-    marginTop: 30,
-    elevation: 2,
-  },
-  updateButton: { backgroundColor: "#3498db" },
-  saveButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  cancelEditButton: { padding: 15, alignItems: "center", marginTop: 10 },
-  cancelEditButtonText: { color: "#e74c3c", fontSize: 16, fontWeight: "600" },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(255,255,255,0.8)",
-    justifyContent: "center",
-    alignItems: "center",
-    zIndex: 999,
-  },
-  loadingText: {
-    marginTop: 10,
-    fontSize: 16,
-    color: "#333",
-    fontWeight: "600",
-  },
-  rowGap: { flexDirection: "row", gap: 10, marginTop: 5 },
-  switchRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginTop: 15,
   },
   attachmentRowItem: {
     flexDirection: "row",
@@ -537,5 +526,27 @@ const styles = StyleSheet.create({
     marginVertical: 4,
     borderWidth: 1,
     borderColor: "#eee",
+  },
+  saveButton: {
+    backgroundColor: "#3498db",
+    borderRadius: 8,
+    padding: 14,
+    alignItems: "center",
+    marginTop: 24,
+    elevation: 2,
+  },
+  saveButtonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: "rgba(255,255,255,0.8)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 999,
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 15,
+    color: "#333",
+    fontWeight: "600",
   },
 });

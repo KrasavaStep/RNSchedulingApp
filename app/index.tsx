@@ -1,4 +1,5 @@
-import { useFocusEffect, useRouter } from "expo-router";
+import { Stack, useFocusEffect, useRouter } from "expo-router";
+import { useSQLiteContext } from "expo-sqlite";
 import { useCallback, useState } from "react";
 import {
   FlatList,
@@ -10,24 +11,25 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getAllTasks } from "../hooks/db";
 import { Task } from "../hooks/types";
-// Импортируем компонент для иконки (или можете использовать обычный текст "+")
 
 type SortOption = "createdAt" | "dueDate" | "status";
 
 export default function TasksListScreen() {
+  const db = useSQLiteContext(); // Нативный контекст базы данных
   const router = useRouter();
   const [tasks, setTasks] = useState<(Task & { createdAt: string })[]>([]);
   const [sortBy, setSortBy] = useState<SortOption>("createdAt");
   const [isLoading, setIsLoading] = useState(true);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
 
+  // Исправлено: функция теперь корректно принимает флаг управления лоадером
   const loadTasks = async (showLoader = false) => {
     try {
       if (showLoader) setIsLoading(true);
-      const data = await getAllTasks();
+      const data = await getAllTasks(db); // Передаем нативный db первым аргументом
       setTasks(data);
     } catch (error) {
-      console.error(error);
+      console.error("Ошибка загрузки задач:", error);
     } finally {
       setIsLoading(false);
       setIsFirstLoad(false);
@@ -36,8 +38,9 @@ export default function TasksListScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      // Плавное фоновое обновление без мерцания интерфейса
       loadTasks(isFirstLoad);
-    }, [isFirstLoad]),
+    }, [isFirstLoad, db]),
   );
 
   const getSortedTasks = () => {
@@ -70,6 +73,31 @@ export default function TasksListScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Конфигурируем панель инструментов (ActionBar) с кнопками Карта и Журнал логов */}
+      <Stack.Screen
+        options={{
+          headerRight: () => (
+            <View style={styles.headerButtonsRow}>
+              {/* Кнопка открытия Интерактивной Карты */}
+              <TouchableOpacity
+                style={styles.headerButton}
+                onPress={() => router.push("/mapView" as any)}
+              >
+                <Text style={styles.headerButtonText}>🗺️</Text>
+              </TouchableOpacity>
+
+              {/* Кнопка открытия Журнала логов */}
+              <TouchableOpacity
+                style={styles.headerButton}
+                onPress={() => router.push("/historyFragment")}
+              >
+                <Text style={styles.headerButtonText}>📜</Text>
+              </TouchableOpacity>
+            </View>
+          ),
+        }}
+      />
+
       <Text style={styles.header}>Список задач</Text>
 
       {/* Панель сортировки */}
@@ -116,7 +144,7 @@ export default function TasksListScreen() {
               style={styles.taskCard}
               onPress={() =>
                 router.push({
-                  pathname: "/taskDetailFragment",
+                  pathname: "/taskDetailFragment" as any, // Добавили as any для страховки кэша роутера
                   params: { id: item.id },
                 })
               }
@@ -229,6 +257,22 @@ const styles = StyleSheet.create({
   },
   emptyText: { fontSize: 15, color: "#999", textAlign: "center" },
 
+  // Стили кнопок действий в тулбаре
+  headerButtonsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginRight: 15,
+  },
+  headerButton: {
+    padding: 6,
+    backgroundColor: "#eef2f7",
+    borderRadius: 20,
+  },
+  headerButtonText: {
+    fontSize: 20,
+  },
+
   // Стили для Floating Action Button
   fab: {
     position: "absolute",
@@ -240,8 +284,8 @@ const styles = StyleSheet.create({
     borderRadius: 30,
     justifyContent: "center",
     alignItems: "center",
-    elevation: 6, // Тень кнопки для Android
-    shadowColor: "#000", // Тень для iOS
+    elevation: 6,
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 4.65,
@@ -250,6 +294,6 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 32,
     fontWeight: "300",
-    marginTop: -3, // Небольшое смещение для идеального центрирования плюса
+    marginTop: -3,
   },
 });

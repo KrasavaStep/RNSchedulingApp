@@ -5,7 +5,8 @@ import { useEffect } from "react";
 import "react-native-reanimated";
 
 import { useColorScheme } from "@/components/useColorScheme";
-import { initDatabase } from "../hooks/db";
+import { SQLiteProvider } from "expo-sqlite";
+import { initDatabaseStructure } from "../hooks/db";
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -24,10 +25,6 @@ export default function RootLayout() {
   const [loaded, error] = useFonts({
     SpaceMono: require("../assets/fonts/SpaceMono-Regular.ttf"),
   });
-
-  useEffect(() => {
-    initDatabase().catch((err) => console.error("Ошибка БД:", err));
-  }, []);
 
   // Expo Router uses Error Boundaries to catch errors in the navigation tree.
   useEffect(() => {
@@ -52,35 +49,45 @@ function RootLayoutNav() {
 
   return (
     <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-      <Stack
-        screenOptions={{
-          headerStyle: {
-            backgroundColor: colorScheme === "dark" ? "#121212" : "#fff",
-          },
-          headerTintColor: colorScheme === "dark" ? "#fff" : "#333",
-          headerTitleStyle: { fontWeight: "bold" },
-        }}
+      <SQLiteProvider
+        databaseName="rnscheduling.db"
+        onInit={initDatabaseStructure}
       >
-        {/* 1. Главный экран списка задач (бывший two.tsx) */}
-        <Stack.Screen name="index" options={{ title: "Список задач" }} />
+        <Stack
+          screenOptions={{
+            headerStyle: {
+              backgroundColor: colorScheme === "dark" ? "#121212" : "#fff",
+            },
+            headerTintColor: colorScheme === "dark" ? "#fff" : "#333",
+            headerTitleStyle: { fontWeight: "bold" },
+          }}
+        >
+          {/* 1. Главный экран списка задач (бывший two.tsx) */}
+          <Stack.Screen name="index" options={{ title: "Список задач" }} />
 
-        {/* 2. Экран формы создания и редактирования */}
-        <Stack.Screen
-          name="taskCreationFragment"
-          options={{ title: "Задача" }}
-        />
+          {/* 2. Экран формы создания и редактирования */}
+          <Stack.Screen
+            name="taskCreationFragment"
+            options={{ title: "Задача" }}
+          />
 
-        {/* 3. Экран подробной информации */}
-        <Stack.Screen
-          name="taskDetailFragment"
-          options={{ title: "Детали задачи" }}
-        />
+          {/* 3. Экран подробной информации */}
+          <Stack.Screen
+            name="taskDetailFragment"
+            options={{ title: "Детали задачи" }}
+          />
 
-        <Stack.Screen
-          name="modal"
-          options={{ presentation: "modal", title: "Информация" }}
-        />
-      </Stack>
+          <Stack.Screen
+            name="modal"
+            options={{ presentation: "modal", title: "Информация" }}
+          />
+
+          <Stack.Screen
+            name="historyFragment"
+            options={{ title: "Журнал событий" }}
+          />
+        </Stack>
+      </SQLiteProvider>
     </ThemeProvider>
   );
 }

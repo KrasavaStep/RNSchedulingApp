@@ -1,4 +1,5 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import * as SQLite from "expo-sqlite"; // Импортируем expo-sqlite
 import { useCallback, useState } from "react";
 import {
   Alert,
@@ -26,17 +27,22 @@ export default function TaskDetailsScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
 
+  // Получаем доступ к контексту базы данных SQLite
+  const db = SQLite.useSQLiteContext();
+
   const [task, setTask] = useState<Task | null>(null);
   const [history, setHistory] = useState<HistoryLog[]>([]);
 
   const loadTaskData = async () => {
     if (!id) return;
     try {
-      const allTasks = await getAllTasks();
+      // Передаем экземпляр db в функции базы данных
+      const allTasks = await getAllTasks(db);
       const foundTask = allTasks.find((t) => t.id === id);
+
       if (foundTask) {
         setTask(foundTask);
-        const histData = await getTaskHistory(id);
+        const histData = await getTaskHistory(db, id);
         setHistory(histData);
       } else {
         Alert.alert("Ошибка", "Задача не найдена");
@@ -56,8 +62,8 @@ export default function TaskDetailsScreen() {
   const handleChangeStatus = async (newStatus: TaskStatus) => {
     if (!task) return;
     try {
-      // 1. Сначала пишем локально в SQLite и лог истории
-      await updateTaskStatus(task.id, newStatus);
+      // 1. Сначала пишем локально в SQLite и лог истории, передавая db
+      await updateTaskStatus(db, task.id, newStatus);
 
       // 2. Сразу отправляем по сети на json-server
       await syncStatusWithServer(task.id, newStatus);
@@ -83,9 +89,9 @@ export default function TaskDetailsScreen() {
         onPress: async () => {
           if (task) {
             try {
-              // 1. Удаляем локально из SQLite (каскадно очистит вложения и логи)
-              await deleteTask(task.id);
-              await insertLog({
+              // 1. Удаляем локально из SQLite и логируем изменения через db
+              await deleteTask(db, task.id);
+              await insertLog(db, {
                 id: Math.random().toString(),
                 timestamp: new Date().toISOString(),
                 actionType: "DELETE",
@@ -148,7 +154,7 @@ export default function TaskDetailsScreen() {
                   <Image
                     source={{ uri: file.uri }}
                     style={styles.imagePreview}
-                    defaultSource={require("../assets/images/icon.png")} // Фоллбэк на случай удаления файла нативным диском
+                    defaultSource={require("../assets/images/icon.png")}
                   />
                 ) : (
                   <Text style={styles.pdfIcon}>📄 PDF</Text>
@@ -281,36 +287,19 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     marginBottom: 5,
   },
-  pdfIcon: { fontSize: 32, marginVertical: 20 },
-  fileName: { fontSize: 12, color: "#666", textAlign: "center" },
+  pdfIcon: { fontSize: 14 },
+  fileName: { fontSize: 12, marginTop: 4, width: "100%", textAlign: "center" },
   emptyText: { fontSize: 14, color: "#999", fontStyle: "italic" },
-  statusButtonsRow: {
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "space-between",
-    marginTop: 5,
-  },
+  statusButtonsRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   actionStatusBtn: {
-    flex: 1,
-    backgroundColor: "#2ecc71",
-    padding: 10,
+    backgroundColor: "#34495e",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     borderRadius: 6,
-    alignItems: "center",
   },
-  actionStatusBtnText: { color: "#fff", fontSize: 12, fontWeight: "bold" },
   disabledBtn: { backgroundColor: "#bdc3c7" },
-  historyBlock: {
-    backgroundColor: "#fdfefe",
-    borderWidth: 1,
-    borderColor: "#f2f4f4",
-    padding: 10,
-    borderRadius: 8,
-  },
-  historyItem: { fontSize: 13, color: "#7f8c8d", marginVertical: 3 },
-  footerActions: {
-    marginTop: 40,
-    borderTopWidth: 1,
-    borderTopColor: "#eee",
-    paddingTop: 20,
-  },
+  actionStatusBtnText: { color: "#fff", fontWeight: "600" },
+  historyBlock: { backgroundColor: "#fdfefe", marginTop: 5 },
+  historyItem: { fontSize: 13, color: "#7f8c8d", marginVertical: 2 },
+  footerActions: { marginTop: 30 },
 });

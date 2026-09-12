@@ -7,41 +7,18 @@ export interface HistoryLog {
   changedAt: string;
 }
 
-// 1. Синглтон подключения
-let dbInstance: SQLite.SQLiteDatabase | null = null;
-
-const getDB = async (): Promise<SQLite.SQLiteDatabase> => {
-  if (!dbInstance) {
-    dbInstance = await SQLite.openDatabaseAsync("rnscheduling.db");
-  }
-  return dbInstance;
-};
-
-// 2. Механизм Mutex для предотвращения конкурентного доступа (NPE) на Android
-let dbMutexPromise = Promise.resolve();
-
-const runWithMutex = <T>(operation: () => Promise<T>): Promise<T> => {
-  // Ставим операцию в очередь за предыдущей
-  const nextPromise = dbMutexPromise.then(async () => {
-    return await operation();
-  });
-  // Обновляем глобальный указатель на последний промис в очереди
-  dbMutexPromise = nextPromise.then(
-    () => {},
-    () => {}, // Игнорируем ошибки, чтобы очередь не блокировалась навсегда
-  );
-  return nextPromise;
-};
-
 /**
- * Инициализация таблиц при старте приложения
+ * Функция первичной инициализации (вызывается один раз нативно через SQLiteProvider)
  */
-export const initDatabase = async () => {
-  return runWithMutex(async () => {
-    const db = await getDB();
-    await db.execAsync("PRAGMA foreign_keys = ON;");
+export const initDatabaseStructure = async (db: SQLite.SQLiteDatabase) => {
+  // Включаем Foreign Keys на уровне ядра SQLite
+  await db.execAsync("PRAGMA foreign_keys = ON;");
 
-    await db.execAsync(`
+  await db.execAsync("DROP TABLE IF EXISTs attachments");
+  await db.execAsync("DROP TABLE IF EXISTs tasks");
+  await db.execAsync("DROP TABLE IF EXISTs app_logs");
+
+  await db.execAsync(`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY NOT NULL,
       title TEXT NOT NULL,
@@ -53,276 +30,274 @@ export const initDatabase = async () => {
       status TEXT NOT NULL,
       createdAt TEXT NOT NULL,
       syncStatus TEXT NOT NULL
-      );
-    `);
+    );
+  `);
 
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS attachments (
-        id TEXT PRIMARY KEY NOT NULL,
-        task_id TEXT NOT NULL,
-        uri TEXT NOT NULL,
-        name TEXT NOT NULL,
-        type TEXT NOT NULL,
-        FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
-      );
-    `);
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS attachments (
+      id TEXT PRIMARY KEY NOT NULL,
+      task_id TEXT NOT NULL,
+      uri TEXT NOT NULL,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+    );
+  `);
 
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS status_history (
-        id TEXT PRIMARY KEY NOT NULL,
-        task_id TEXT NOT NULL,
-        status TEXT NOT NULL,
-        changedAt TEXT NOT NULL,
-        FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
-      );
-    `);
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS app_logs (
+      id TEXT PRIMARY KEY NOT NULL,
+      timestamp TEXT NOT NULL,
+      actionType TEXT NOT NULL,
+      description TEXT NOT NULL
+    );
+  `);
 
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS app_logs (
-        id TEXT PRIMARY KEY NOT NULL,
-        timestamp TEXT NOT NULL,
-        actionType TEXT NOT NULL,
-        description TEXT NOT NULL
-      );
-    `);
-
-    console.log("--- БАЗА ДАННЫХ И ТАБЛИЦЫ УСПЕШНО ИНИЦИАЛИЗИРОВАНЫ ---");
-  });
-};
-
-/**
- * Сохранение новой задачи
- */
-export const insertTask = async (task: Task): Promise<void> => {
-  return runWithMutex(async () => {
-    const db = await getDB();
-    const now = new Date().toISOString();
-
-    await db.withTransactionAsync(async () => {
-      await db.runAsync(
-        `INSERT INTO tasks (id, title, description, dueDate, address, latitude, longitude, status, createdAt) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-        [
-          task.id,
-          task.title,
-          task.description,
-          task.dueDate,
-          task.location.address,
-          null,
-          null,
-          task.status,
-          now,
-        ],
-      );
-
-      await db.runAsync(
-        `INSERT INTO status_history (id, task_id, status, changedAt) VALUES (?, ?, ?, ?);`,
-        [Math.random().toString(36).substring(7), task.id, task.status, now],
-      );
-
-      for (const attach of task.attachments) {
-        await db.runAsync(
-          `INSERT INTO attachments (id, task_id, uri, name, type) VALUES (?, ?, ?, ?, ?);`,
-          [attach.id, task.id, attach.uri, attach.name, attach.type],
-        );
-      }
-    });
-  });
-};
-
-/**
- * Обновление существующей задачи
- */
-export const updateTask = async (
-  task: Task,
-  oldStatus: TaskStatus,
-): Promise<void> => {
-  return runWithMutex(async () => {
-    const db = await getDB();
-    const now = new Date().toISOString();
-
-    await db.withTransactionAsync(async () => {
-      await db.runAsync(
-        `UPDATE tasks SET title = ?, description = ?, dueDate = ?, address = ?, status = ? WHERE id = ?;`,
-        [
-          task.title,
-          task.description,
-          task.dueDate,
-          task.location.address,
-          task.status,
-          task.id,
-        ],
-      );
-
-      if (task.status !== oldStatus) {
-        await db.runAsync(
-          `INSERT INTO status_history (id, task_id, status, changedAt) VALUES (?, ?, ?, ?);`,
-          [Math.random().toString(36).substring(7), task.id, task.status, now],
-        );
-      }
-
-      await db.runAsync("DELETE FROM attachments WHERE task_id = ?;", [
-        task.id,
-      ]);
-      for (const attach of task.attachments) {
-        await db.runAsync(
-          `INSERT INTO attachments (id, task_id, uri, name, type) VALUES (?, ?, ?, ?, ?);`,
-          [attach.id, task.id, attach.uri, attach.name, attach.type],
-        );
-      }
-    });
-  });
-};
-
-/**
- * Быстрое обновление статуса (из экрана деталей)
- */
-export const updateTaskStatus = async (
-  taskId: string,
-  newStatus: TaskStatus,
-): Promise<void> => {
-  return runWithMutex(async () => {
-    const db = await getDB();
-    const now = new Date().toISOString();
-
-    await db.withTransactionAsync(async () => {
-      await db.runAsync(`UPDATE tasks SET status = ? WHERE id = ?;`, [
-        newStatus,
-        taskId,
-      ]);
-      await db.runAsync(
-        `INSERT INTO status_history (id, task_id, status, changedAt) VALUES (?, ?, ?, ?);`,
-        [Math.random().toString(36).substring(7), taskId, newStatus, now],
-      );
-    });
-  });
-};
-
-/**
- * Каскадное удаление
- */
-export const deleteTask = async (taskId: string): Promise<void> => {
-  return runWithMutex(async () => {
-    const db = await getDB();
-    await db.runAsync("DELETE FROM tasks WHERE id = ?;", [taskId]);
-  });
+  console.log("--- [Нативный Слой] Структура SQLite успешно проверена ---");
 };
 
 /**
  * Получение истории логов для задачи
  */
-export const getTaskHistory = async (taskId: string): Promise<HistoryLog[]> => {
-  return runWithMutex(async () => {
-    const db = await getDB();
-    const rows = await db.getAllAsync<any>(
-      "SELECT * FROM status_history WHERE task_id = ? ORDER BY changedAt DESC;",
-      [taskId],
-    );
-    return rows.map((r) => ({
-      id: r.id,
-      status: r.status,
-      changedAt: r.changedAt,
-    }));
-  });
+export const getTaskHistory = async (
+  db: SQLite.SQLiteDatabase,
+  taskId: string,
+): Promise<HistoryLog[]> => {
+  const rows = await db.getAllAsync<any>(
+    "SELECT * FROM status_history WHERE task_id = ? ORDER BY changedAt DESC;",
+    [taskId],
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    status: r.status,
+    changedAt: r.changedAt,
+  }));
 };
 
-/**
- * Чтение всех задач из БД (Обернуто в runWithMutex)
- */
-export const getAllTasks = async (): Promise<
-  (Task & { createdAt: string })[]
-> => {
-  return runWithMutex(async () => {
-    const db = await getDB();
-    const tasksRows = await db.getAllAsync<any>(
-      "SELECT * FROM tasks ORDER BY createdAt DESC;",
+export const updateTaskIdInLocalDB = async (
+  db: SQLite.SQLiteDatabase,
+  oldId: string,
+  newServerId: string,
+): Promise<void> => {
+  await db.withTransactionAsync(async () => {
+    // 1. Получаем саму задачу, чтобы скопировать её данные
+    const taskRow = await db.getFirstAsync<any>(
+      "SELECT * FROM tasks WHERE id = ?;",
+      [oldId],
     );
-    const tasks: any[] = [];
+    if (!taskRow) return;
 
-    for (const row of tasksRows) {
-      const attachRows = await db.getAllAsync<any>(
-        "SELECT * FROM attachments WHERE task_id = ?;",
-        [row.id],
-      );
-      const attachments = attachRows.map((att) => ({
-        id: att.id,
-        uri: att.uri,
-        name: att.name,
-        type: att.type,
-      }));
+    // 2. Получаем её локальные вложения и историю, чтобы перевязать их на новый ID
+    const attachRows = await db.getAllAsync<any>(
+      "SELECT * FROM attachments WHERE task_id = ?;",
+      [oldId],
+    );
+    const historyRows = await db.getAllAsync<any>(
+      "SELECT * FROM status_history WHERE task_id = ?;",
+      [oldId],
+    );
 
-      tasks.push({
-        id: row.id,
-        title: row.title,
-        description: row.description,
-        dueDate: row.dueDate,
-        createdAt: row.createdAt,
-        location: { address: row.address },
-        attachments,
-        status: row.status,
-      });
-    }
-    return tasks;
-  });
-};
+    // 3. Удаляем старую задачу (благодаря ON DELETE CASCADE связанные вложения и история очистятся сами)
+    await db.runAsync("DELETE FROM tasks WHERE id = ?;", [oldId]);
 
-/**
- * Запись нового события в глобальный журнал истории (ТЗ)
- */
-export const insertLog = async (log: AppLog): Promise<void> => {
-  return runWithMutex(async () => {
-    const db = await SQLite.openDatabaseAsync("rnscheduling.db");
+    // 4. Вставляем задачу заново, но уже с НОВЫМ серверным ID
     await db.runAsync(
-      `INSERT INTO app_logs (id, timestamp, actionType, description) 
-       VALUES (?, ?, ?, ?);`,
+      `INSERT INTO tasks (id, title, description, dueDate, address, latitude, longitude, status, createdAt, syncStatus) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
       [
-        log.id || Math.random().toString(36).substring(7),
-        log.timestamp || new Date().toISOString(),
-        log.actionType,
-        log.description,
+        newServerId, // Наш новый ID от сервера (например, "1")
+        taskRow.title,
+        taskRow.description,
+        taskRow.dueDate,
+        taskRow.address,
+        taskRow.latitude,
+        taskRow.longitude,
+        taskRow.status,
+        taskRow.createdAt,
+        "Synced", // Сразу ставим статус "Синхронизировано"
       ],
     );
-    console.log(
-      `[Журнал] Зафиксировано действие: ${log.actionType} - ${log.description}`,
-    );
+
+    // 5. Записываем обратно вложения, привязав к новому серверному ID
+    for (const att of attachRows) {
+      await db.runAsync(
+        `INSERT INTO attachments (id, task_id, uri, name, type) VALUES (?, ?, ?, ?, ?);`,
+        [att.id, newServerId, att.uri, att.name, att.type],
+      );
+    }
+
+    // 6. Записываем обратно историю статусов с новым серверным ID
+    for (const hist of historyRows) {
+      await db.runAsync(
+        `INSERT INTO status_history (id, task_id, status, changedAt) VALUES (?, ?, ?, ?);`,
+        [hist.id, newServerId, hist.status, hist.changedAt],
+      );
+    }
   });
+
+  console.log(
+    `[БД Успех] Задача полностью переведена на серверный ID: "${newServerId}"`,
+  );
 };
 
-/**
- * Чтение всех логов из журнала истории (ТЗ)
- */
-export const getAllLogs = async (): Promise<AppLog[]> => {
-  return runWithMutex(async () => {
-    const db = await SQLite.openDatabaseAsync("rnscheduling.db");
-    // Сортируем ORDER BY timestamp DESC, чтобы новые события проверяющий видел вверху списка
-    const rows = await db.getAllAsync<any>(
-      "SELECT * FROM app_logs ORDER BY timestamp DESC;",
-    );
-
-    return rows.map((r) => ({
-      id: r.id,
-      timestamp: r.timestamp,
-      actionType: r.actionType as LogActionType,
-      description: r.description,
-    }));
-  });
-};
-
-/**
- * Обновление статуса синхронизации задачи с сервером
- */
-export const updateTaskSyncStatus = async (
-  taskId: string,
-  newSyncStatus: "Synced" | "Pending Sync" | "Sync Failed",
+export const insertTask = async (
+  db: SQLite.SQLiteDatabase,
+  task: Task,
 ): Promise<void> => {
-  return runWithMutex(async () => {
-    const db = await SQLite.openDatabaseAsync("rnscheduling.db");
-    await db.runAsync(`UPDATE tasks SET syncStatus = ? WHERE id = ?;`, [
-      newSyncStatus,
-      taskId,
-    ]);
-    console.log(
-      `[БД] Статус синхронизации задачи ${taskId} изменен на: ${newSyncStatus}`,
+  const now = new Date().toISOString();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `INSERT INTO tasks (id, title, description, dueDate, address, latitude, longitude, status, createdAt, syncStatus) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+      [
+        task.id,
+        task.title,
+        task.description,
+        task.dueDate,
+        task.location.address,
+        task.location.latitude ?? null,
+        task.location.longitude ?? null,
+        task.status,
+        now,
+        task.syncStatus,
+      ],
     );
+
+    for (const attach of task.attachments) {
+      await db.runAsync(
+        `INSERT INTO attachments (id, task_id, uri, name, type) VALUES (?, ?, ?, ?, ?);`,
+        [attach.id, task.id, attach.uri, attach.name, attach.type],
+      );
+    }
   });
+};
+
+export const updateTask = async (
+  db: SQLite.SQLiteDatabase,
+  task: Task,
+): Promise<void> => {
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE tasks 
+       SET title = ?, description = ?, dueDate = ?, address = ?, latitude = ?, longitude = ?, status = ?, syncStatus = ? 
+       WHERE id = ?;`,
+      [
+        task.title,
+        task.description,
+        task.dueDate,
+        task.location.address,
+        task.location.latitude ?? null,
+        task.location.longitude ?? null,
+        task.status,
+        task.syncStatus,
+        task.id,
+      ],
+    );
+
+    await db.runAsync("DELETE FROM attachments WHERE task_id = ?;", [task.id]);
+    for (const attach of task.attachments) {
+      await db.runAsync(
+        `INSERT INTO attachments (id, task_id, uri, name, type) VALUES (?, ?, ?, ?, ?);`,
+        [attach.id, task.id, attach.uri, attach.name, attach.type],
+      );
+    }
+  });
+};
+
+export const updateTaskStatus = async (
+  db: SQLite.SQLiteDatabase,
+  taskId: string,
+  newStatus: TaskStatus,
+): Promise<void> => {
+  await db.runAsync(`UPDATE tasks SET status = ? WHERE id = ?;`, [
+    newStatus,
+    taskId,
+  ]);
+};
+
+export const updateTaskSyncStatus = async (
+  db: SQLite.SQLiteDatabase,
+  taskId: string,
+  newSyncStatus: string,
+): Promise<void> => {
+  await db.runAsync(`UPDATE tasks SET syncStatus = ? WHERE id = ?;`, [
+    newSyncStatus,
+    taskId,
+  ]);
+};
+
+export const deleteTask = async (
+  db: SQLite.SQLiteDatabase,
+  taskId: string,
+): Promise<void> => {
+  await db.runAsync("DELETE FROM tasks WHERE id = ?;", [taskId]);
+};
+
+export const insertLog = async (
+  db: SQLite.SQLiteDatabase,
+  log: AppLog,
+): Promise<void> => {
+  await db.runAsync(
+    `INSERT INTO app_logs (id, timestamp, actionType, description) VALUES (?, ?, ?, ?);`,
+    [
+      log.id || Math.random().toString(36).substring(7),
+      log.timestamp || new Date().toISOString(),
+      log.actionType,
+      log.description,
+    ],
+  );
+};
+
+export const getAllLogs = async (
+  db: SQLite.SQLiteDatabase,
+): Promise<AppLog[]> => {
+  const rows = await db.getAllAsync<any>(
+    "SELECT * FROM app_logs ORDER BY timestamp DESC;",
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    timestamp: r.timestamp,
+    actionType: r.actionType as LogActionType,
+    description: r.description,
+  }));
+};
+
+export const getAllTasks = async (
+  db: SQLite.SQLiteDatabase,
+): Promise<(Task & { createdAt: string })[]> => {
+  const tasksRows = await db.getAllAsync<any>(
+    "SELECT * FROM tasks ORDER BY createdAt DESC;",
+  );
+  const tasks: any[] = [];
+
+  for (const row of tasksRows) {
+    const attachRows = await db.getAllAsync<any>(
+      "SELECT * FROM attachments WHERE task_id = ?;",
+      [row.id],
+    );
+    const attachments = attachRows.map((att) => ({
+      id: att.id,
+      uri: att.uri,
+      name: att.name,
+      type: att.type,
+    }));
+
+    tasks.push({
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      dueDate: row.dueDate,
+      createdAt: row.createdAt,
+      location: {
+        address: row.address,
+        latitude: row.latitude ?? undefined,
+        longitude: row.longitude ?? undefined,
+      },
+      attachments,
+      status: row.status,
+      syncStatus: row.syncStatus,
+    });
+  }
+  return tasks;
 };
