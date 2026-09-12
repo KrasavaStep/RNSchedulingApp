@@ -8,8 +8,9 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { getAllTasks } from "../../hooks/db";
-import { Task } from "../../hooks/types";
+import { getAllTasks } from "../hooks/db";
+import { Task } from "../hooks/types";
+// Импортируем компонент для иконки (или можете использовать обычный текст "+")
 
 type SortOption = "createdAt" | "dueDate" | "status";
 
@@ -18,39 +19,36 @@ export default function TasksListScreen() {
   const [tasks, setTasks] = useState<(Task & { createdAt: string })[]>([]);
   const [sortBy, setSortBy] = useState<SortOption>("createdAt");
   const [isLoading, setIsLoading] = useState(true);
+  const [isFirstLoad, setIsFirstLoad] = useState(true);
 
-  const loadTasks = async () => {
+  const loadTasks = async (showLoader = false) => {
     try {
-      setIsLoading(true);
+      if (showLoader) setIsLoading(true);
       const data = await getAllTasks();
       setTasks(data);
     } catch (error) {
       console.error(error);
     } finally {
       setIsLoading(false);
+      setIsFirstLoad(false);
     }
   };
 
   useFocusEffect(
     useCallback(() => {
-      loadTasks();
-    }, []),
+      loadTasks(isFirstLoad);
+    }, [isFirstLoad]),
   );
 
-  // Функция сортировки на стороне клиента (JS/TS)
   const getSortedTasks = () => {
     return [...tasks].sort((a, b) => {
-      if (sortBy === "createdAt") {
+      if (sortBy === "createdAt")
         return (
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        ); // Сначала новые
-      }
-      if (sortBy === "dueDate") {
-        return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime(); // Сначала срочные
-      }
-      if (sortBy === "status") {
-        return a.status.localeCompare(b.status); // Сгруппировать по алфавиту статуса
-      }
+        );
+      if (sortBy === "dueDate")
+        return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+      if (sortBy === "status") return a.status.localeCompare(b.status);
       return 0;
     });
   };
@@ -102,10 +100,11 @@ export default function TasksListScreen() {
         ))}
       </View>
 
+      {/* Список задач */}
       {getSortedTasks().length === 0 && !isLoading ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyText}>
-            Задач нет. Создайте первую на соседней вкладке!
+            Задач нет. Нажмите на плюс, чтобы создать первую!
           </Text>
         </View>
       ) : (
@@ -115,12 +114,12 @@ export default function TasksListScreen() {
           renderItem={({ item }) => (
             <TouchableOpacity
               style={styles.taskCard}
-              onPress={() => {
+              onPress={() =>
                 router.push({
                   pathname: "/taskDetailFragment",
                   params: { id: item.id },
-                });
-              }}
+                })
+              }
             >
               <View style={styles.cardHeader}>
                 <Text style={styles.taskTitle} numberOfLines={1}>
@@ -149,9 +148,17 @@ export default function TasksListScreen() {
             </TouchableOpacity>
           )}
           refreshing={isLoading}
-          onRefresh={loadTasks}
+          onRefresh={() => loadTasks(false)}
         />
       )}
+
+      {/* КНОПКА FAB: Отрендерена поверх списка */}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => router.push("/taskCreationFragment")}
+      >
+        <Text style={styles.fabText}>+</Text>
+      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -221,4 +228,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 40,
   },
   emptyText: { fontSize: 15, color: "#999", textAlign: "center" },
+
+  // Стили для Floating Action Button
+  fab: {
+    position: "absolute",
+    right: 20,
+    bottom: 20,
+    backgroundColor: "#3498db",
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 6, // Тень кнопки для Android
+    shadowColor: "#000", // Тень для iOS
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
+  },
+  fabText: {
+    color: "#fff",
+    fontSize: 32,
+    fontWeight: "300",
+    marginTop: -3, // Небольшое смещение для идеального центрирования плюса
+  },
 });

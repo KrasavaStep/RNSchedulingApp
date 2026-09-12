@@ -1,23 +1,23 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import {
-    Alert,
-    Button,
-    Image,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Alert,
+  Button,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { syncDeleteWithServer, syncStatusWithServer } from "../hooks/api";
 import {
-    deleteTask,
-    getAllTasks,
-    getTaskHistory,
-    HistoryLog,
-    updateTaskStatus,
+  deleteTask,
+  getAllTasks,
+  getTaskHistory,
+  HistoryLog,
+  updateTaskStatus,
 } from "../hooks/db";
 import { Task, TaskStatus } from "../hooks/types";
 
@@ -192,7 +192,7 @@ export default function TaskDetailsScreen() {
             title="Редактировать полностью"
             onPress={() =>
               router.push({
-                pathname: "/(tabs)/taskCreationFragment",
+                pathname: "/taskCreationFragment",
                 params: { editId: task.id },
               })
             }

@@ -16,9 +16,9 @@ import {
 import {
   syncInsertTaskWithServer,
   syncUpdateTaskWithServer,
-} from "../../hooks/api";
-import { getAllTasks, insertTask, updateTask } from "../../hooks/db"; // Проверьте пути
-import { Task, TaskAttachment, TaskStatus } from "../../hooks/types";
+} from "../hooks/api";
+import { getAllTasks, insertTask, updateTask } from "../hooks/db"; // Проверьте пути
+import { Task, TaskAttachment, TaskStatus } from "../hooks/types";
 
 const STATUSES: TaskStatus[] = ["New", "In Progress", "Completed", "Canceled"];
 
@@ -192,7 +192,7 @@ export default function TaskFormScreen() {
       );
       // Всё равно закрываем форму, так как локально всё записано
       resetForm();
-      router.replace("/(tabs)/taskListFragment");
+      router.back;
     }
   };
 
