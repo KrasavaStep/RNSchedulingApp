@@ -17,6 +17,7 @@ import {
   getAllTasks,
   getTaskHistory,
   HistoryLog,
+  insertLog,
   updateTaskStatus,
 } from "../hooks/db";
 import { Task, TaskStatus } from "../hooks/types";
@@ -84,10 +85,15 @@ export default function TaskDetailsScreen() {
             try {
               // 1. Удаляем локально из SQLite (каскадно очистит вложения и логи)
               await deleteTask(task.id);
+              await insertLog({
+                id: Math.random().toString(),
+                timestamp: new Date().toISOString(),
+                actionType: "DELETE",
+                description: `Удалена задача с ID: ${task.id}`,
+              });
 
               // 2. Удаляем с удаленного сервера
               await syncDeleteWithServer(task.id);
-
               router.back();
             } catch (e) {
               console.error(e);

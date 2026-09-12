@@ -4,10 +4,12 @@ import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Button,
   ScrollView,
-  StyleSheet,
+  StyleSheet, // Добавлено
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -17,7 +19,14 @@ import {
   syncInsertTaskWithServer,
   syncUpdateTaskWithServer,
 } from "../hooks/api";
-import { getAllTasks, insertTask, updateTask } from "../hooks/db"; // Проверьте пути
+import {
+  getAllTasks,
+  insertLog,
+  insertTask,
+  updateTask,
+  updateTaskSyncStatus,
+} from "../hooks/db"; // Проверьте пути
+import { scheduleTaskNotification } from "../hooks/notifications"; // Импорт сервиса пушей
 import { Task, TaskAttachment, TaskStatus } from "../hooks/types";
 
 const STATUSES: TaskStatus[] = ["New", "In Progress", "Completed", "Canceled"];
@@ -39,6 +48,11 @@ export default function TaskFormScreen() {
   // Контроль UI
   const [pickerMode, setPickerMode] = useState<"date" | "time" | null>(null);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
+
+  const [isNetworkLoading, setIsNetworkLoading] = useState(false); // Для лоадера сохранения
+  const [isDemoMode, setIsDemoMode] = useState(false); // Чекбокс демо-пуша
+  const [lat, setLat] = useState(""); // Координаты вручную
+  const [lon, setLon] = useState("");
 
   // Каждый раз при заходе на экран проверяем, не пришли ли мы редактировать
   useFocusEffect(
@@ -139,6 +153,10 @@ export default function TaskFormScreen() {
     }
   };
 
+  const removeAttachment = (id: string) => {
+    setAttachments(attachments.filter((item) => item.id !== id));
+  };
+
   const handleSave = async () => {
     const currentErrors: { [key: string]: string } = {};
     if (!title.trim()) currentErrors.title = "Название задачи обязательно";
@@ -158,41 +176,75 @@ export default function TaskFormScreen() {
       title: title.trim(),
       description: description.trim(),
       dueDate: dueDate.toISOString(),
-      location: { address: address.trim() },
+      createdAt: new Date().toISOString(),
+      location: {
+        address: address.trim(),
+        latitude: lat ? parseFloat(lat) : undefined,
+        longitude: lon ? parseFloat(lon) : undefined,
+      },
       attachments,
       status,
+      syncStatus: "Pending Sync", // По умолчанию ставим статус ожидания
     };
 
     try {
+      // 1. Блокируем UI, показываем ActivityIndicator по ТЗ
+      setIsNetworkLoading(true);
+
+      // 2. Сохраняем локально в SQLite (работает мгновенно в оффлайне)
       if (isEditMode) {
-        // 1. Обновляем локально в SQLite
         await updateTask(taskData, originalStatus);
-
-        // 2. Синхронизируем с REST API сервера
-        await syncUpdateTaskWithServer(taskData);
-
-        Alert.alert("Успех", "Задача обновлена локально и на сервере!");
       } else {
-        // 1. Сохраняем локально в SQLite
         await insertTask(taskData);
-
-        // 2. Синхронизируем с REST API сервера
-        await syncInsertTaskWithServer(taskData);
-
-        Alert.alert("Успех", "Задача создана локально и на сервере!");
       }
-      resetForm();
-      router.back;
-    } catch (error) {
-      // Если упала сеть, данные в SQLite всё равно сохранились!
-      console.error(error);
-      Alert.alert(
-        "Частичный успех",
-        "Данные сохранены локально, но не удалось отправить их на сервер (офлайн-режим).",
+
+      await insertLog({
+        id: Math.random().toString(),
+        timestamp: new Date().toISOString(),
+        actionType: isEditMode ? "EDIT" : "CREATE",
+        description: `Пользователь ${isEditMode ? "отредактировал" : "создал"} задачу "${taskData.title}"`,
+      });
+
+      // 3. Планируем нативный push-уведомление
+      await scheduleTaskNotification(
+        taskData.id,
+        taskData.title,
+        taskData.dueDate,
+        isDemoMode,
       );
-      // Всё равно закрываем форму, так как локально всё записано
-      resetForm();
-      router.back;
+
+      // 4. Пробуем отправить по сети на MockAPI
+      try {
+        if (isEditMode) {
+          await syncUpdateTaskWithServer(taskData);
+        } else {
+          await syncInsertTaskWithServer(taskData);
+        }
+        // Если сеть успешна — обновляем статус на Synced
+        await updateTaskSyncStatus(taskData.id, "Synced");
+        await insertLog({
+          id: Math.random().toString(),
+          timestamp: new Date().toISOString(),
+          actionType: "SYNC",
+          description: `Успешная синхронизация задачи "${taskData.title}" с MockAPI`,
+        });
+      } catch (netError) {
+        // Оффлайн режим по ТЗ: если сеть упала, статус остается 'Pending Sync', приложение не падает
+        await updateTaskSyncStatus(taskData.id, "Sync Failed");
+        await insertLog({
+          id: Math.random().toString(),
+          timestamp: new Date().toISOString(),
+          actionType: "SYNC",
+          description: `Сбой сети при отправке "${taskData.title}". Переведено в режим ожидания.`,
+        });
+      }
+
+      Alert.alert("Успех", "Задача сохранена!");
+      router.back();
+    } catch (error) {
+      Alert.alert("Ошибка", "Критическая ошибка БД");
+    } finally {
+      setIsNetworkLoading(false); // Выключаем лоадер
     }
   };
 
@@ -201,6 +253,14 @@ export default function TaskFormScreen() {
       style={styles.container}
       contentContainerStyle={styles.contentContainer}
     >
+      {/* Если идет отправка на сервер — перекрываем экран лоадером по ТЗ */}
+      {isNetworkLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#3498db" />
+          <Text style={styles.loadingText}>Синхронизация с сервером...</Text>
+        </View>
+      )}
+
       <Text style={styles.header}>
         {isEditMode ? "Редактирование задачи" : "Создание задачи"}
       </Text>
@@ -242,6 +302,25 @@ export default function TaskFormScreen() {
         placeholder="Укажите адрес вручную"
       />
       {errors.address && <Text style={styles.errorText}>{errors.address}</Text>}
+
+      {/* ТЗ: Ввод координат вручную (преимущество к ТЗ) */}
+      <Text style={styles.label}>Координаты места (необязательно)</Text>
+      <View style={styles.rowGap}>
+        <TextInput
+          style={[styles.input, { flex: 1 }]}
+          placeholder="Широта (Lat)"
+          value={lat}
+          onChangeText={setLat}
+          keyboardType="numeric"
+        />
+        <TextInput
+          style={[styles.input, { flex: 1 }]}
+          placeholder="Долгота (Lon)"
+          value={lon}
+          onChangeText={setLon}
+          keyboardType="numeric"
+        />
+      </View>
 
       {/* Поле: Срок выполнения */}
       <Text style={styles.label}>Срок выполнения *</Text>
@@ -287,6 +366,11 @@ export default function TaskFormScreen() {
         ))}
       </View>
 
+      <View style={styles.switchRow}>
+        <Text style={styles.label}>Тест пуша через 30 секунд (Демо)</Text>
+        <Switch value={isDemoMode} onValueChange={setIsDemoMode} />
+      </View>
+
       {/* Вложения */}
       <Text style={styles.label}>Вложения (Изображения / PDF)</Text>
       <View style={styles.attachButtonsRow}>
@@ -301,9 +385,22 @@ export default function TaskFormScreen() {
       {attachments.length > 0 && (
         <View style={styles.attachmentsList}>
           {attachments.map((item) => (
-            <Text key={item.id} style={styles.attachmentItem} numberOfLines={1}>
-              📎 {item.type.toUpperCase()}: {item.name}
-            </Text>
+            <View key={item.id} style={styles.attachmentRowItem}>
+              <Text style={{ flex: 1 }} numberOfLines={1}>
+                📎 {item.name}
+              </Text>
+              <TouchableOpacity onPress={() => removeAttachment(item.id)}>
+                <Text
+                  style={{
+                    color: "#e74c3c",
+                    fontWeight: "bold",
+                    paddingHorizontal: 10,
+                  }}
+                >
+                  ❌
+                </Text>
+              </TouchableOpacity>
+            </View>
           ))}
         </View>
       )}
@@ -312,6 +409,7 @@ export default function TaskFormScreen() {
       <TouchableOpacity
         style={[styles.saveButton, isEditMode && styles.updateButton]}
         onPress={handleSave}
+        disabled={isNetworkLoading}
       >
         <Text style={styles.saveButtonText}>
           {isEditMode ? "Сохранить изменения" : "Создать задачу"}
@@ -409,4 +507,35 @@ const styles = StyleSheet.create({
   saveButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
   cancelEditButton: { padding: 15, alignItems: "center", marginTop: 10 },
   cancelEditButtonText: { color: "#e74c3c", fontSize: 16, fontWeight: "600" },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: "rgba(255,255,255,0.8)",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 999,
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 16,
+    color: "#333",
+    fontWeight: "600",
+  },
+  rowGap: { flexDirection: "row", gap: 10, marginTop: 5 },
+  switchRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 15,
+  },
+  attachmentRowItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    padding: 8,
+    borderRadius: 6,
+    marginVertical: 4,
+    borderWidth: 1,
+    borderColor: "#eee",
+  },
 });

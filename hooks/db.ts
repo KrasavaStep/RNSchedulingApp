@@ -1,5 +1,5 @@
 import * as SQLite from "expo-sqlite";
-import { Task, TaskStatus } from "./types";
+import { AppLog, LogActionType, Task, TaskStatus } from "./types";
 
 export interface HistoryLog {
   id: string;
@@ -42,16 +42,17 @@ export const initDatabase = async () => {
     await db.execAsync("PRAGMA foreign_keys = ON;");
 
     await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT NOT NULL,
-        dueDate TEXT NOT NULL,
-        address TEXT NOT NULL,
-        latitude REAL,
-        longitude REAL,
-        status TEXT NOT NULL,
-        createdAt TEXT NOT NULL
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      dueDate TEXT NOT NULL,
+      address TEXT NOT NULL,
+      latitude REAL,
+      longitude REAL,
+      status TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      syncStatus TEXT NOT NULL
       );
     `);
 
@@ -73,6 +74,15 @@ export const initDatabase = async () => {
         status TEXT NOT NULL,
         changedAt TEXT NOT NULL,
         FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+      );
+    `);
+
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS app_logs (
+        id TEXT PRIMARY KEY NOT NULL,
+        timestamp TEXT NOT NULL,
+        actionType TEXT NOT NULL,
+        description TEXT NOT NULL
       );
     `);
 
@@ -253,5 +263,66 @@ export const getAllTasks = async (): Promise<
       });
     }
     return tasks;
+  });
+};
+
+/**
+ * Запись нового события в глобальный журнал истории (ТЗ)
+ */
+export const insertLog = async (log: AppLog): Promise<void> => {
+  return runWithMutex(async () => {
+    const db = await SQLite.openDatabaseAsync("rnscheduling.db");
+    await db.runAsync(
+      `INSERT INTO app_logs (id, timestamp, actionType, description) 
+       VALUES (?, ?, ?, ?);`,
+      [
+        log.id || Math.random().toString(36).substring(7),
+        log.timestamp || new Date().toISOString(),
+        log.actionType,
+        log.description,
+      ],
+    );
+    console.log(
+      `[Журнал] Зафиксировано действие: ${log.actionType} - ${log.description}`,
+    );
+  });
+};
+
+/**
+ * Чтение всех логов из журнала истории (ТЗ)
+ */
+export const getAllLogs = async (): Promise<AppLog[]> => {
+  return runWithMutex(async () => {
+    const db = await SQLite.openDatabaseAsync("rnscheduling.db");
+    // Сортируем ORDER BY timestamp DESC, чтобы новые события проверяющий видел вверху списка
+    const rows = await db.getAllAsync<any>(
+      "SELECT * FROM app_logs ORDER BY timestamp DESC;",
+    );
+
+    return rows.map((r) => ({
+      id: r.id,
+      timestamp: r.timestamp,
+      actionType: r.actionType as LogActionType,
+      description: r.description,
+    }));
+  });
+};
+
+/**
+ * Обновление статуса синхронизации задачи с сервером
+ */
+export const updateTaskSyncStatus = async (
+  taskId: string,
+  newSyncStatus: "Synced" | "Pending Sync" | "Sync Failed",
+): Promise<void> => {
+  return runWithMutex(async () => {
+    const db = await SQLite.openDatabaseAsync("rnscheduling.db");
+    await db.runAsync(`UPDATE tasks SET syncStatus = ? WHERE id = ?;`, [
+      newSyncStatus,
+      taskId,
+    ]);
+    console.log(
+      `[БД] Статус синхронизации задачи ${taskId} изменен на: ${newSyncStatus}`,
+    );
   });
 };
