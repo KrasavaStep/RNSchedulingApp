@@ -182,7 +182,7 @@ export default function TaskFormScreen() {
         Alert.alert("Успех", "Задача создана локально и на сервере!");
       }
       resetForm();
-      router.replace("/(tabs)/taskListFragment");
+      router.back;
     } catch (error) {
       // Если упала сеть, данные в SQLite всё равно сохранились!
       console.error(error);
