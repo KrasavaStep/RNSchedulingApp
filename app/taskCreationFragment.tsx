@@ -1,8 +1,8 @@
+import { useDatabase } from "@nozbe/watermelondb/react"; // 1. Импортируем хук WatermelonDB
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { useSQLiteContext } from "expo-sqlite"; // 1. Импортируем нативный контекст
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
@@ -27,14 +27,14 @@ import {
   updateTask,
   updateTaskIdInLocalDB,
   updateTaskSyncStatus,
-} from "../hooks/db";
+} from "../hooks/db/dbService"; // 2. Импортируем из нового dbService
 import { scheduleTaskNotification } from "../hooks/notifications";
 import { Task, TaskAttachment, TaskStatus } from "../hooks/types";
 
 const STATUSES: TaskStatus[] = ["New", "In Progress", "Completed", "Canceled"];
 
 export default function TaskFormScreen() {
-  const db = useSQLiteContext(); // 2. Инициализируем нативный инстанс БД
+  const database = useDatabase(); // 3. Инициализируем инстанс WatermelonDB
   const router = useRouter();
   const { editId } = useLocalSearchParams<{ editId?: string }>();
   const isEditMode = !!editId;
@@ -62,8 +62,8 @@ export default function TaskFormScreen() {
       if (editId) {
         const loadTaskData = async () => {
           try {
-            // Передаем db в метод чтения
-            const allTasks = await getAllTasks(db);
+            // Передаем database в метод чтения
+            const allTasks = await getAllTasks(database);
             const currentTask = allTasks.find((t) => t.id === editId);
 
             if (currentTask) {
@@ -85,7 +85,7 @@ export default function TaskFormScreen() {
         };
         loadTaskData();
       }
-    }, [editId, db]),
+    }, [editId, database]), // Обновлена зависимость на database
   );
 
   const resetForm = () => {
@@ -192,17 +192,17 @@ export default function TaskFormScreen() {
       },
       attachments,
       status,
-      syncStatus: "Pending Sync",
+      syncStatus: "Pending Sync", // Учитываем, что в API.ts мы переписали типы на SyncStatus
     };
 
     try {
       setIsNetworkLoading(true);
 
       if (isEditMode) {
-        // Режим Редактирования (передаем db)
-        await updateTask(db, taskData);
+        // Режим Редактирования (передаем database)
+        await updateTask(database, taskData);
 
-        await insertLog(db, {
+        await insertLog(database, {
           id: Math.random().toString(),
           timestamp: new Date().toISOString(),
           actionType: "EDIT",
@@ -211,21 +211,21 @@ export default function TaskFormScreen() {
 
         try {
           await syncUpdateTaskWithServer(taskData);
-          await updateTaskSyncStatus(db, taskData.id, "Synced");
-          await insertLog(db, {
+          await updateTaskSyncStatus(database, taskData.id, "Synced");
+          await insertLog(database, {
             id: Math.random().toString(),
             timestamp: new Date().toISOString(),
             actionType: "SYNC",
             description: `Успешный PUT. Изменения задачи "${taskData.title}" синхронизированы.`,
           });
         } catch (netError) {
-          await updateTaskSyncStatus(db, taskData.id, "Sync Failed");
+          await updateTaskSyncStatus(database, taskData.id, "Sync Failed");
         }
       } else {
-        // Режим Создания (передаем db)
-        await insertTask(db, taskData);
+        // Режим Создания (передаем database)
+        await insertTask(database, taskData);
 
-        await insertLog(db, {
+        await insertLog(database, {
           id: Math.random().toString(),
           timestamp: new Date().toISOString(),
           actionType: "CREATE",
@@ -234,30 +234,30 @@ export default function TaskFormScreen() {
 
         try {
           const serverId = await syncInsertTaskWithServer(taskData);
-          await updateTaskIdInLocalDB(db, taskData.id, serverId);
+          await updateTaskIdInLocalDB(database, taskData.id, serverId);
           await scheduleTaskNotification(
             serverId,
             taskData.title,
-            taskData.dueDate,
+            taskData.dueDate, // Гарантируем, что передаем объект Date
             isDemoMode,
           );
-          await updateTaskSyncStatus(db, serverId, "Synced");
+          await updateTaskSyncStatus(database, serverId, "Synced");
 
-          await insertLog(db, {
+          await insertLog(database, {
             id: Math.random().toString(),
             timestamp: new Date().toISOString(),
             actionType: "SYNC",
             description: `Успешный POST. Задача "${taskData.title}" переведена на серверный ID: ${serverId}`,
           });
         } catch (netError) {
-          await updateTaskSyncStatus(db, taskData.id, "Sync Failed");
+          await updateTaskSyncStatus(database, taskData.id, "Sync Failed");
           await scheduleTaskNotification(
             taskData.id,
             taskData.title,
             taskData.dueDate,
             isDemoMode,
           );
-          await insertLog(db, {
+          await insertLog(database, {
             id: Math.random().toString(),
             timestamp: new Date().toISOString(),
             actionType: "SYNC",
@@ -291,7 +291,6 @@ export default function TaskFormScreen() {
         </View>
       )}
 
-      {/* Поле: Название */}
       <Text style={styles.label}>Название *</Text>
       <TextInput
         style={[styles.input, errors.title ? styles.inputError : null]}
@@ -301,7 +300,6 @@ export default function TaskFormScreen() {
       />
       {errors.title && <Text style={styles.errorText}>{errors.title}</Text>}
 
-      {/* Поле: Описание */}
       <Text style={styles.label}>Описание *</Text>
       <TextInput
         style={[
@@ -319,7 +317,6 @@ export default function TaskFormScreen() {
         <Text style={styles.errorText}>{errors.description}</Text>
       )}
 
-      {/* Поле: Адрес */}
       <Text style={styles.label}>Адрес местоположения *</Text>
       <TextInput
         style={[styles.input, errors.address ? styles.inputError : null]}
@@ -329,7 +326,6 @@ export default function TaskFormScreen() {
       />
       {errors.address && <Text style={styles.errorText}>{errors.address}</Text>}
 
-      {/* Поля: Координаты */}
       <Text style={styles.label}>Координаты (необязательно)</Text>
       <View style={styles.rowGap}>
         <TextInput
@@ -348,7 +344,6 @@ export default function TaskFormScreen() {
         />
       </View>
 
-      {/* Поле: Выбор даты дедлайна */}
       <Text style={styles.label}>Срок выполнения *</Text>
       <TouchableOpacity
         style={styles.dateButton}
@@ -368,7 +363,6 @@ export default function TaskFormScreen() {
         />
       )}
 
-      {/* Поле: Статус задачи */}
       <Text style={styles.label}>Статус задачи</Text>
       <View style={styles.statusContainer}>
         {STATUSES.map((s) => (
@@ -392,7 +386,6 @@ export default function TaskFormScreen() {
         ))}
       </View>
 
-      {/* Поле: Демо-режим пушей */}
       <View style={styles.switchRow}>
         <Text style={[styles.label, { marginTop: 0 }]}>
           Тест пуша через 30 секунд (Демо)
@@ -400,7 +393,6 @@ export default function TaskFormScreen() {
         <Switch value={isDemoMode} onValueChange={setIsDemoMode} />
       </View>
 
-      {/* Блок вложений */}
       <Text style={styles.label}>Вложения (Изображения / PDF)</Text>
       <View style={styles.attachButtonsRow}>
         <View style={styles.flexBtn}>
@@ -411,7 +403,6 @@ export default function TaskFormScreen() {
         </View>
       </View>
 
-      {/* Вывод списка прикрепленных файлов с возможностью удаления по кнопке (крестик) */}
       {attachments.length > 0 && (
         <View style={styles.attachmentsList}>
           {attachments.map((item) => (
@@ -435,7 +426,6 @@ export default function TaskFormScreen() {
         </View>
       )}
 
-      {/* Финальная кнопка отправки формы */}
       <TouchableOpacity
         style={styles.saveButton}
         onPress={handleSave}
@@ -450,102 +440,88 @@ export default function TaskFormScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f5f5f5" },
-  contentContainer: { padding: 20, paddingBottom: 40 },
+  container: { flex: 1, backgroundColor: "#fff" },
+  contentContainer: { padding: 16, paddingBottom: 40 },
   label: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
-    marginTop: 14,
-    marginBottom: 4,
-    color: "#444",
+    marginTop: 12,
+    marginBottom: 6,
+    color: "#333",
   },
   input: {
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 8,
-    padding: 10,
-    fontSize: 16,
-  },
-  inputError: { borderColor: "#ff4d4d" },
-  textArea: { height: 80, textAlignVertical: "top" },
-  errorText: { color: "#ff4d4d", fontSize: 13, marginTop: 2 },
-  rowGap: { flexDirection: "row", gap: 10, marginTop: 4 },
-  dateButton: {
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 8,
-    padding: 12,
-    alignItems: "center",
-  },
-  dateButtonText: { fontSize: 16, color: "#333" },
-  statusContainer: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: 4,
-  },
-  statusButton: {
     borderWidth: 1,
     borderColor: "#ccc",
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: "#fff",
+    borderRadius: 8,
+    padding: 12,
+    backgroundColor: "#fafafa",
+    fontSize: 16,
   },
-  statusButtonActive: { backgroundColor: "#2ecc71", borderColor: "#2ecc71" },
-  statusButtonText: { color: "#555", fontSize: 13, fontWeight: "600" },
+  inputError: { borderColor: "#e74c3c", backgroundColor: "#fdf3f2" },
+  textArea: { minHeight: 80, textAlignVertical: "top" },
+  errorText: { color: "#e74c3c", fontSize: 12, marginTop: 4 },
+  rowGap: { flexDirection: "row", gap: 10 },
+  dateButton: {
+    backgroundColor: "#eef2f7",
+    padding: 14,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  dateButtonText: { color: "#333", fontSize: 16, fontWeight: "500" },
+  statusContainer: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  statusButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: "#eee",
+  },
+  statusButtonActive: { backgroundColor: "#3498db" },
+  statusButtonText: { color: "#555", fontWeight: "600" },
   statusButtonTextActive: { color: "#fff" },
   switchRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginTop: 14,
+    marginTop: 20,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: "#eee",
   },
-  attachButtonsRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 10,
-    marginTop: 4,
-  },
+  attachButtonsRow: { flexDirection: "row", gap: 10, marginTop: 5 },
   flexBtn: { flex: 1 },
   attachmentsList: {
-    marginTop: 10,
-    backgroundColor: "#eef2f7",
-    padding: 8,
+    marginTop: 15,
+    backgroundColor: "#f9f9f9",
     borderRadius: 8,
+    padding: 10,
   },
   attachmentRowItem: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    backgroundColor: "#fff",
-    padding: 8,
-    borderRadius: 6,
-    marginVertical: 4,
-    borderWidth: 1,
-    borderColor: "#eee",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
   },
   saveButton: {
-    backgroundColor: "#3498db",
-    borderRadius: 8,
-    padding: 14,
+    backgroundColor: "#2ecc71",
+    padding: 16,
+    borderRadius: 12,
     alignItems: "center",
-    marginTop: 24,
-    elevation: 2,
+    marginTop: 30,
   },
-  saveButtonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  saveButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
   loadingOverlay: {
     ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(255,255,255,0.8)",
+    zIndex: 10,
     justifyContent: "center",
     alignItems: "center",
-    zIndex: 999,
   },
   loadingText: {
     marginTop: 10,
-    fontSize: 15,
+    fontSize: 16,
     color: "#333",
     fontWeight: "600",
   },

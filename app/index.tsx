@@ -1,5 +1,5 @@
+import { useDatabase } from "@nozbe/watermelondb/react";
 import { Stack, useFocusEffect, useRouter } from "expo-router";
-import { useSQLiteContext } from "expo-sqlite";
 import { useCallback, useState } from "react";
 import {
   FlatList,
@@ -9,24 +9,23 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { getAllTasks } from "../hooks/db";
+import { getAllTasks } from "../hooks/db/dbService";
 import { Task } from "../hooks/types";
 
 type SortOption = "createdAt" | "dueDate" | "status";
 
 export default function TasksListScreen() {
-  const db = useSQLiteContext(); // Нативный контекст базы данных
+  const database = useDatabase(); // Контекст WatermelonDB вместо useSQLiteContext
   const router = useRouter();
   const [tasks, setTasks] = useState<(Task & { createdAt: string })[]>([]);
   const [sortBy, setSortBy] = useState<SortOption>("createdAt");
   const [isLoading, setIsLoading] = useState(true);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
 
-  // Исправлено: функция теперь корректно принимает флаг управления лоадером
   const loadTasks = async (showLoader = false) => {
     try {
       if (showLoader) setIsLoading(true);
-      const data = await getAllTasks(db); // Передаем нативный db первым аргументом
+      const data = await getAllTasks(database);
       setTasks(data);
     } catch (error) {
       console.error("Ошибка загрузки задач:", error);
@@ -38,9 +37,8 @@ export default function TasksListScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      // Плавное фоновое обновление без мерцания интерфейса
       loadTasks(isFirstLoad);
-    }, [isFirstLoad, db]),
+    }, [isFirstLoad, database]),
   );
 
   const getSortedTasks = () => {
@@ -73,12 +71,10 @@ export default function TasksListScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Конфигурируем панель инструментов (ActionBar) с кнопками Карта и Журнал логов */}
       <Stack.Screen
         options={{
           headerRight: () => (
             <View style={styles.headerButtonsRow}>
-              {/* Кнопка открытия Интерактивной Карты */}
               <TouchableOpacity
                 style={styles.headerButton}
                 onPress={() => router.push("/mapView" as any)}
@@ -86,7 +82,6 @@ export default function TasksListScreen() {
                 <Text style={styles.headerButtonText}>🗺️</Text>
               </TouchableOpacity>
 
-              {/* Кнопка открытия Журнала логов */}
               <TouchableOpacity
                 style={styles.headerButton}
                 onPress={() => router.push("/historyFragment")}
@@ -100,7 +95,6 @@ export default function TasksListScreen() {
 
       <Text style={styles.header}>Список задач</Text>
 
-      {/* Панель сортировки */}
       <View style={styles.sortContainer}>
         <Text style={styles.sortLabel}>Сортировка:</Text>
         {(["createdAt", "dueDate", "status"] as SortOption[]).map((option) => (
@@ -128,7 +122,6 @@ export default function TasksListScreen() {
         ))}
       </View>
 
-      {/* Список задач */}
       {getSortedTasks().length === 0 && !isLoading ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyText}>
@@ -144,7 +137,7 @@ export default function TasksListScreen() {
               style={styles.taskCard}
               onPress={() =>
                 router.push({
-                  pathname: "/taskDetailFragment" as any, // Добавили as any для страховки кэша роутера
+                  pathname: "/taskDetailFragment" as any,
                   params: { id: item.id },
                 })
               }
@@ -180,7 +173,6 @@ export default function TasksListScreen() {
         />
       )}
 
-      {/* КНОПКА FAB: Отрендерена поверх списка */}
       <TouchableOpacity
         style={styles.fab}
         onPress={() => router.push("/taskCreationFragment")}
@@ -257,7 +249,6 @@ const styles = StyleSheet.create({
   },
   emptyText: { fontSize: 15, color: "#999", textAlign: "center" },
 
-  // Стили кнопок действий в тулбаре
   headerButtonsRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -273,7 +264,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
 
-  // Стили для Floating Action Button
   fab: {
     position: "absolute",
     right: 20,

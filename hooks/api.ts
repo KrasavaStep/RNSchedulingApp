@@ -1,95 +1,89 @@
 import { Task, TaskStatus } from "./types";
 
-// IP-адрес хоста ПК для Android-эмулятора
-const API_URL = "https://6aa515b61397053d42bb7203.mockapi.io/taskapi/v1/tasks";
+const API_URL =
+  process.env.EXPO_PUBLIC_API_URL ||
+  "https://6aa515b61397053d42bb7203.mockapi.io/taskapi/v1/tasks";
+const TIMEOUT_MS = 10000;
+
+// Вспомогательный метод fetch с таймаутом и обработкой ошибок
+const fetchWithTimeout = async (url: string, options: RequestInit = {}) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(id);
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(
+        `Ошибка ${response.status}: ${errorText || response.statusText}`,
+      );
+    }
+
+    return response;
+  } catch (error: any) {
+    clearTimeout(id);
+    if (error.name === "AbortError") {
+      throw new Error("Превышено время ожидания ответа от сервера (Timeout)");
+    }
+    throw error;
+  }
+};
 
 /**
- * Отправка новой задачи на удаленный сервер (POST)
- * Возвращает созданный сервером ID (строку)
+ * Отправка новой задачи (POST)
  */
 export const syncInsertTaskWithServer = async (task: Task): Promise<string> => {
-  try {
-    const response = await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(task),
-    });
+  // Исключаем локальный id и служебный syncStatus из тела запроса
+  const { id: _, syncStatus: __, ...payload } = task;
 
-    if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
+  const response = await fetchWithTimeout(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 
-    // Получаем тело ответа от MockAPI. Там будет объект задачи с правильным ID от сервера!
-    const serverTask = await response.json();
-    console.log(
-      "⚡ Задача синхронизирована с MockAPI. Серверный ID:",
-      serverTask.id,
-    );
-
-    return String(serverTask.id); // Возвращаем серверный ID (например, "1")
-  } catch (error) {
-    console.error("❌ Не удалось отправить задачу на сервер:", error);
-    throw error;
-  }
+  const serverTask = await response.json();
+  return String(serverTask.id);
 };
 
 /**
- * Обновление задачи на удаленном сервере (PUT)
+ * Полное обновление задачи (PUT)
  */
 export const syncUpdateTaskWithServer = async (task: Task): Promise<void> => {
-  try {
-    console.log(`${API_URL}/${task.id}`);
-    console.log(JSON.stringify(task));
-    // В MockAPI / Supabase стандартный REST-путь для обновления конкретной записи: URL/id
-    const response = await fetch(`${API_URL}/${task.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(task),
-    });
+  const { syncStatus: _, ...payload } = task;
 
-    if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
-    console.log(
-      "⚡ Изменения успешно синхронизированы с ОБЛАЧНЫМ сервером (PUT)",
-    );
-  } catch (error) {
-    console.error("❌ Не удалось обновить задачу на сервере:", error);
-    throw error;
-  }
+  await fetchWithTimeout(`${API_URL}/${task.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 };
 
 /**
- * Быстрое обновление статуса задачи на сервере (PATCH)
+ * Быстрое обновление статуса задачи (PATCH)
  */
 export const syncStatusWithServer = async (
   taskId: string,
   newStatus: TaskStatus,
 ): Promise<void> => {
-  try {
-    const response = await fetch(`${API_URL}/${taskId}`, {
-      method: "PUT", // Внимание: MockAPI иногда лучше переваривает полный PUT для обновления части данных, либо PATCH, если он разрешен в настройках ресурса. Попробуйте PUT.
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: newStatus }),
-    });
-
-    if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
-    console.log(`⚡ Статус задачи успешно обновлен в облаке`);
-  } catch (error) {
-    console.error(error);
-    throw error;
-  }
+  // Использование PATCH вместо PUT сохраняет остальные поля объекта на сервере
+  await fetchWithTimeout(`${API_URL}/${taskId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: newStatus }),
+  });
 };
 
 /**
- * Удаление задачи с сервера (DELETE)
+ * Удаление задачи (DELETE)
  */
 export const syncDeleteWithServer = async (taskId: string): Promise<void> => {
-  try {
-    const response = await fetch(`${API_URL}/${taskId}`, {
-      method: "DELETE",
-    });
-
-    if (!response.ok) throw new Error(`Ошибка сервера: ${response.status}`);
-    console.log(`⚡ Задача успешно удалена из облака (DELETE)`);
-  } catch (error) {
-    console.error(error);
-    throw error;
-  }
+  await fetchWithTimeout(`${API_URL}/${taskId}`, {
+    method: "DELETE",
+  });
 };

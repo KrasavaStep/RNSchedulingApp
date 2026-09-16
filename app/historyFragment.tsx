@@ -1,21 +1,21 @@
+import { useDatabase } from "@nozbe/watermelondb/react";
 import { useFocusEffect } from "expo-router";
-import { useSQLiteContext } from "expo-sqlite"; // 1. Импортируем нативный контекст базы данных
 import { useCallback, useState } from "react";
 import { FlatList, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { getAllLogs } from "../hooks/db";
+import { getAllLogs } from "../hooks/db/dbService";
 import { AppLog } from "../hooks/types";
 
 export default function HistoryScreen() {
-  const db = useSQLiteContext(); // 2. Инициализируем контекст SQLite (работает потокобезопасно)
+  const database = useDatabase(); // 1. Получаем экземпляр WatermelonDB из контекста
   const [logs, setLogs] = useState<AppLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const loadLogs = async () => {
     try {
       setIsLoading(true);
-      // 3. Передаем db первым аргументом в метод чтения логов
-      const data = await getAllLogs(db);
+      // 2. Вызываем переписанный метод getAllLogs, передавая экземпляр WatermelonDB
+      const data = await getAllLogs(database);
       setLogs(data);
     } catch (error) {
       console.error("Ошибка при чтении логов:", error);
@@ -27,22 +27,21 @@ export default function HistoryScreen() {
   useFocusEffect(
     useCallback(() => {
       loadLogs();
-    }, [db]), // Добавили db в массив зависимостей для корректной работы хука
+    }, [database]),
   );
 
-  // Цвета плашек для разных типов действий
   const getActionBadgeColor = (type: string) => {
     switch (type) {
       case "CREATE":
-        return "#2ecc71"; // Зеленый
+        return "#2ecc71";
       case "EDIT":
-        return "#3498db"; // Синий
+        return "#3498db";
       case "STATUS_CHANGE":
-        return "#f1c40f"; // Желтый
+        return "#f1c40f";
       case "DELETE":
-        return "#e74c3c"; // Красный
+        return "#e74c3c";
       case "SYNC":
-        return "#9b59b6"; // Фиолетовый
+        return "#9b59b6";
       default:
         return "#7f8c8d";
     }

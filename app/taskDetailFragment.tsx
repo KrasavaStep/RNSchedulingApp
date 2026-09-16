@@ -1,5 +1,5 @@
+import { useDatabase } from "@nozbe/watermelondb/react"; // 1. Импортируем хук WatermelonDB
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import * as SQLite from "expo-sqlite"; // Импортируем expo-sqlite
 import { useCallback, useState } from "react";
 import {
   Alert,
@@ -20,15 +20,15 @@ import {
   HistoryLog,
   insertLog,
   updateTaskStatus,
-} from "../hooks/db";
+} from "../hooks/db/dbService"; // 2. Обновлен импорт на dbService
 import { Task, TaskStatus } from "../hooks/types";
 
 export default function TaskDetailsScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
 
-  // Получаем доступ к контексту базы данных SQLite
-  const db = SQLite.useSQLiteContext();
+  // 3. Получаем доступ к экземпляру WatermelonDB
+  const database = useDatabase();
 
   const [task, setTask] = useState<Task | null>(null);
   const [history, setHistory] = useState<HistoryLog[]>([]);
@@ -36,13 +36,13 @@ export default function TaskDetailsScreen() {
   const loadTaskData = async () => {
     if (!id) return;
     try {
-      // Передаем экземпляр db в функции базы данных
-      const allTasks = await getAllTasks(db);
+      // Передаем экземпляр database в функции базы данных
+      const allTasks = await getAllTasks(database);
       const foundTask = allTasks.find((t) => t.id === id);
 
       if (foundTask) {
         setTask(foundTask);
-        const histData = await getTaskHistory(db, id);
+        const histData = await getTaskHistory(database, id);
         setHistory(histData);
       } else {
         Alert.alert("Ошибка", "Задача не найдена");
@@ -56,16 +56,24 @@ export default function TaskDetailsScreen() {
   useFocusEffect(
     useCallback(() => {
       loadTaskData();
-    }, [id]),
+    }, [id, database]),
   );
 
   const handleChangeStatus = async (newStatus: TaskStatus) => {
     if (!task) return;
     try {
-      // 1. Сначала пишем локально в SQLite и лог истории, передавая db
-      await updateTaskStatus(db, task.id, newStatus);
+      // 1. Сначала пишем локально в WatermelonDB и лог истории, передавая database
+      await updateTaskStatus(database, task.id, newStatus);
 
-      // 2. Сразу отправляем по сети на json-server
+      // Записываем лог смены статуса
+      await insertLog(database, {
+        id: Math.random().toString(),
+        timestamp: new Date().toISOString(),
+        actionType: "STATUS_CHANGE",
+        description: `Статус задачи "${task.title}" изменен на [${newStatus}]`,
+      });
+
+      // 2. Сразу отправляем по сети на сервер
       await syncStatusWithServer(task.id, newStatus);
 
       loadTaskData(); // Перезагружаем экран, чтобы обновить UI
@@ -76,7 +84,7 @@ export default function TaskDetailsScreen() {
         "Офлайн-режим",
         "Статус изменен локально, но не синхронизирован с сервером.",
       );
-      loadTaskData(); // Всё равно обновляем UI из SQLite
+      loadTaskData(); // Всё равно обновляем UI из WatermelonDB
     }
   };
 
@@ -89,9 +97,9 @@ export default function TaskDetailsScreen() {
         onPress: async () => {
           if (task) {
             try {
-              // 1. Удаляем локально из SQLite и логируем изменения через db
-              await deleteTask(db, task.id);
-              await insertLog(db, {
+              // 1. Удаляем локально из WatermelonDB (каскадное удаление настроено)
+              await deleteTask(database, task.id);
+              await insertLog(database, {
                 id: Math.random().toString(),
                 timestamp: new Date().toISOString(),
                 actionType: "DELETE",
@@ -190,12 +198,16 @@ export default function TaskDetailsScreen() {
         {/* История изменений */}
         <Text style={styles.sectionTitle}>История изменений статуса</Text>
         <View style={styles.historyBlock}>
-          {history.map((log) => (
-            <Text key={log.id} style={styles.historyItem}>
-              ⏱️ {new Date(log.changedAt).toLocaleTimeString()} — Смена статуса
-              на [{log.status}]
-            </Text>
-          ))}
+          {history.length === 0 ? (
+            <Text style={styles.emptyText}>История пуста</Text>
+          ) : (
+            history.map((log) => (
+              <Text key={log.id} style={styles.historyItem}>
+                ⏱️ {new Date(log.changedAt).toLocaleTimeString()} — Смена
+                статуса на [{log.status}]
+              </Text>
+            ))
+          )}
         </View>
 
         {/* Опции редактирования / удаления */}
@@ -204,7 +216,7 @@ export default function TaskDetailsScreen() {
             title="Редактировать полностью"
             onPress={() =>
               router.push({
-                pathname: "/taskCreationFragment",
+                pathname: "/taskCreationFragment" as any,
                 params: { editId: task.id },
               })
             }
