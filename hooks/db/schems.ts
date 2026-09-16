@@ -13,7 +13,7 @@ export const schema = appSchema({
         { name: "latitude", type: "number", isOptional: true },
         { name: "longitude", type: "number", isOptional: true },
         { name: "status", type: "string" },
-        { name: "created_at", type: "string" },
+        { name: "created_at", type: "number" },
         { name: "sync_status", type: "string" },
       ],
     }),

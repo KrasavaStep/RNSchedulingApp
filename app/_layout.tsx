@@ -5,8 +5,10 @@ import { useEffect } from "react";
 import "react-native-reanimated";
 
 import { useColorScheme } from "@/components/useColorScheme";
-import { SQLiteProvider } from "expo-sqlite";
-import { initDatabaseStructure } from "../hooks/db";
+
+// 1. Импортируем провайдер и инициализированную базу WatermelonDB
+import { DatabaseProvider } from "@nozbe/watermelondb/react";
+import { database } from "../hooks/database";
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -49,10 +51,8 @@ function RootLayoutNav() {
 
   return (
     <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-      <SQLiteProvider
-        databaseName="rnscheduling.db"
-        onInit={initDatabaseStructure}
-      >
+      {/* 2. Заменяем SQLiteProvider на DatabaseProvider */}
+      <DatabaseProvider database={database}>
         <Stack
           screenOptions={{
             headerStyle: {
@@ -62,32 +62,34 @@ function RootLayoutNav() {
             headerTitleStyle: { fontWeight: "bold" },
           }}
         >
-          {/* 1. Главный экран списка задач (бывший two.tsx) */}
+          {/* Главный экран списка задач */}
           <Stack.Screen name="index" options={{ title: "Список задач" }} />
 
-          {/* 2. Экран формы создания и редактирования */}
+          {/* Экран формы создания и редактирования */}
           <Stack.Screen
             name="taskCreationFragment"
             options={{ title: "Задача" }}
           />
 
-          {/* 3. Экран подробной информации */}
+          {/* Экран подробной информации */}
           <Stack.Screen
             name="taskDetailFragment"
             options={{ title: "Детали задачи" }}
           />
 
+          {/* Модальное окно */}
           <Stack.Screen
             name="modal"
             options={{ presentation: "modal", title: "Информация" }}
           />
 
+          {/* Журнал логов */}
           <Stack.Screen
             name="historyFragment"
             options={{ title: "Журнал событий" }}
           />
         </Stack>
-      </SQLiteProvider>
+      </DatabaseProvider>
     </ThemeProvider>
   );
 }

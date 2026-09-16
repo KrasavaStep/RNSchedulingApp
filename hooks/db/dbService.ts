@@ -1,10 +1,10 @@
 import { Database, Q } from "@nozbe/watermelondb";
 import { AppLog, LogActionType, SyncStatus, Task, TaskStatus } from "../types";
 import {
-    AppLogModel,
-    AttachmentModel,
-    StatusHistoryModel,
-    TaskModel,
+  AppLogModel,
+  AttachmentModel,
+  StatusHistoryModel,
+  TaskModel,
 } from "./models";
 
 export interface HistoryLog {
@@ -124,7 +124,7 @@ export const insertTask = async (db: Database, task: Task): Promise<void> => {
       record.latitude = task.location.latitude;
       record.longitude = task.location.longitude;
       record.status = task.status;
-      record.createdAt = now;
+      record.createdAt = task.createdAt ? new Date(task.createdAt) : new Date();
       record.appSyncStatus = task.syncStatus;
     });
 
@@ -298,7 +298,9 @@ export const getAllTasks = async (
         title: task.title,
         description: task.description,
         dueDate: task.dueDate,
-        createdAt: task.createdAt,
+        createdAt: task.createdAt
+          ? task.createdAt.toISOString()
+          : new Date().toISOString(),
         location: {
           address: task.address,
           latitude: task.latitude,
