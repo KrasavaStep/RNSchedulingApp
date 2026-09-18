@@ -33,7 +33,7 @@ export const getTaskHistory = async (
 };
 
 /**
- * Замена локального ID на новый ID от сервера
+ * Замена локального временного ID на серверный ID (Атомарная транзакция)
  */
 export const updateTaskIdInLocalDB = async (
   db: Database,
@@ -55,9 +55,9 @@ export const updateTaskIdInLocalDB = async (
       .query(Q.where("task_id", oldId))
       .fetch();
 
-    // 1. Создаем новую задачу с явным серверам ID
-    const newTask = await tasksAdapter.create((record) => {
-      record._raw.id = newServerId; // WatermelonDB позволяет явно задать ID при создании
+    // 1. Подготавливаем новую запись с явным ID сервера
+    const newTask = tasksAdapter.prepareCreate((record) => {
+      record._raw.id = newServerId;
       record.title = task.title;
       record.description = task.description;
       record.dueDate = task.dueDate;
@@ -69,53 +69,51 @@ export const updateTaskIdInLocalDB = async (
       record.appSyncStatus = "Synced";
     });
 
-    // 2. Переносим вложения
+    // 2. Подготавливаем перенос вложений
     const newAttachments = attachments.map((att) =>
       attachmentsAdapter.prepareCreate((record) => {
-        record.taskId = newTask.id;
+        record.taskId = newServerId;
         record.uri = att.uri;
         record.name = att.name;
         record.type = att.type;
       }),
     );
 
-    // 3. Переносим историю
+    // 3. Подготавливаем перенос истории
     const newHistories = histories.map((hist) =>
       historiesAdapter.prepareCreate((record) => {
-        record.taskId = newTask.id;
+        record.taskId = newServerId;
         record.status = hist.status;
         record.changedAt = hist.changedAt;
       }),
     );
 
-    // 4. Удаляем старые записи
+    // 4. Подготавливаем удаление старых временных записей
     const markAsDeleted = [
       task.prepareDestroyPermanently(),
       ...attachments.map((a) => a.prepareDestroyPermanently()),
       ...histories.map((h) => h.prepareDestroyPermanently()),
     ];
 
-    // Выполняем все операции одним батчем в потоке C++
+    // Выполняем создание и удаление одной атомарной пачкой
     await db.batch(
-      ...markAsDeleted,
       newTask,
       ...newAttachments,
       ...newHistories,
+      ...markAsDeleted,
     );
   });
 };
 
 /**
- * Вставка задачи с вложениями
+ * Атомарная вставка задачи с вложениями
  */
 export const insertTask = async (db: Database, task: Task): Promise<void> => {
-  const now = new Date().toISOString();
-
   await db.write(async () => {
     const tasksAdapter = db.get<TaskModel>("tasks");
     const attachmentsAdapter = db.get<AttachmentModel>("attachments");
 
-    const newTask = await tasksAdapter.create((record) => {
+    const newTask = tasksAdapter.prepareCreate((record) => {
       if (task.id) record._raw.id = task.id;
       record.title = task.title;
       record.description = task.description;
@@ -138,9 +136,7 @@ export const insertTask = async (db: Database, task: Task): Promise<void> => {
       }),
     );
 
-    if (attachmentRecords.length > 0) {
-      await db.batch(...attachmentRecords);
-    }
+    await db.batch(newTask, ...attachmentRecords);
   });
 };
 
@@ -154,7 +150,6 @@ export const updateTask = async (db: Database, task: Task): Promise<void> => {
 
     const taskRecord = await tasksAdapter.find(task.id);
 
-    // Подготовка обновления задачи
     const updateTaskOp = taskRecord.prepareUpdate((record) => {
       record.title = task.title;
       record.description = task.description;
@@ -166,13 +161,11 @@ export const updateTask = async (db: Database, task: Task): Promise<void> => {
       record.appSyncStatus = task.syncStatus;
     });
 
-    // Удаление старых вложений
     const oldAttachments = await attachmentsAdapter
       .query(Q.where("task_id", task.id))
       .fetch();
     const deleteOps = oldAttachments.map((a) => a.prepareDestroyPermanently());
 
-    // Создание новых вложений
     const createOps = (task.attachments || []).map((attach) =>
       attachmentsAdapter.prepareCreate((record) => {
         if (attach.id) record._raw.id = attach.id;
@@ -188,7 +181,7 @@ export const updateTask = async (db: Database, task: Task): Promise<void> => {
 };
 
 /**
- * Обновление статуса задачи
+ * Обновление статуса задачи с параллельной записью в историю
  */
 export const updateTaskStatus = async (
   db: Database,
@@ -197,9 +190,19 @@ export const updateTaskStatus = async (
 ): Promise<void> => {
   await db.write(async () => {
     const task = await db.get<TaskModel>("tasks").find(taskId);
-    await task.update((record) => {
+    const historiesAdapter = db.get<StatusHistoryModel>("status_histories");
+
+    const updateTaskOp = task.prepareUpdate((record) => {
       record.status = newStatus;
     });
+
+    const createHistoryOp = historiesAdapter.prepareCreate((record) => {
+      record.taskId = taskId;
+      record.status = newStatus;
+      record.changedAt = new Date().toISOString();
+    });
+
+    await db.batch(updateTaskOp, createHistoryOp);
   });
 };
 
@@ -209,13 +212,19 @@ export const updateTaskStatus = async (
 export const updateTaskSyncStatus = async (
   db: Database,
   taskId: string,
-  newSyncStatus: string,
+  newSyncStatus: SyncStatus,
 ): Promise<void> => {
   await db.write(async () => {
-    const task = await db.get<TaskModel>("tasks").find(taskId);
-    await task.update((record) => {
-      record.appSyncStatus = newSyncStatus;
-    });
+    const task = await db
+      .get<TaskModel>("tasks")
+      .find(taskId)
+      .catch(() => null);
+
+    if (task && task._raw._status !== "deleted") {
+      await task.update((record) => {
+        record.appSyncStatus = newSyncStatus;
+      });
+    }
   });
 };
 
@@ -227,7 +236,12 @@ export const deleteTask = async (
   taskId: string,
 ): Promise<void> => {
   await db.write(async () => {
-    const task = await db.get<TaskModel>("tasks").find(taskId);
+    const task = await db
+      .get<TaskModel>("tasks")
+      .find(taskId)
+      .catch(() => null);
+    if (!task) return;
+
     const attachments = await db
       .get<AttachmentModel>("attachments")
       .query(Q.where("task_id", taskId))
@@ -281,15 +295,13 @@ export const getAllLogs = async (db: Database): Promise<AppLog[]> => {
 /**
  * Получение всех задач с загруженными вложениями
  */
-export const getAllTasks = async (
-  db: Database,
-): Promise<(Task & { createdAt: string })[]> => {
+export const getAllTasks = async (db: Database): Promise<Task[]> => {
   const tasks = await db
     .get<TaskModel>("tasks")
     .query(Q.sortBy("created_at", Q.desc))
     .fetch();
 
-  const result = await Promise.all(
+  return Promise.all(
     tasks.map(async (task) => {
       const attachments = await task.attachments.fetch();
 
@@ -317,6 +329,4 @@ export const getAllTasks = async (
       };
     }),
   );
-
-  return result;
 };

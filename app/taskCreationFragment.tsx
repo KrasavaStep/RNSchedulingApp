@@ -1,13 +1,15 @@
-import { useDatabase } from "@nozbe/watermelondb/react"; // 1. Импортируем хук WatermelonDB
+import { useDatabase } from "@nozbe/watermelondb/react";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Button,
+  Modal,
   ScrollView,
   StyleSheet,
   Switch,
@@ -16,6 +18,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import MapView, { MapPressEvent, Marker } from "react-native-maps";
+
 import {
   syncInsertTaskWithServer,
   syncUpdateTaskWithServer,
@@ -27,14 +31,18 @@ import {
   updateTask,
   updateTaskIdInLocalDB,
   updateTaskSyncStatus,
-} from "../hooks/db/dbService"; // 2. Импортируем из нового dbService
+} from "../hooks/db/dbService";
 import { scheduleTaskNotification } from "../hooks/notifications";
 import { Task, TaskAttachment, TaskStatus } from "../hooks/types";
 
 const STATUSES: TaskStatus[] = ["New", "In Progress", "Completed", "Canceled"];
 
+// Дефолтные координаты (Москва)
+const DEFAULT_LAT = 55.751241;
+const DEFAULT_LON = 37.618423;
+
 export default function TaskFormScreen() {
-  const database = useDatabase(); // 3. Инициализируем инстанс WatermelonDB
+  const database = useDatabase();
   const router = useRouter();
   const { editId } = useLocalSearchParams<{ editId?: string }>();
   const isEditMode = !!editId;
@@ -57,12 +65,19 @@ export default function TaskFormScreen() {
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
 
+  // Состояние карты
+  const [isMapVisible, setIsMapVisible] = useState(false);
+  const [tempCoords, setTempCoords] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
+  const [isGeocodingLoading, setIsGeocodingLoading] = useState(false);
+
   useFocusEffect(
     useCallback(() => {
       if (editId) {
         const loadTaskData = async () => {
           try {
-            // Передаем database в метод чтения
             const allTasks = await getAllTasks(database);
             const currentTask = allTasks.find((t) => t.id === editId);
 
@@ -85,7 +100,7 @@ export default function TaskFormScreen() {
         };
         loadTaskData();
       }
-    }, [editId, database]), // Обновлена зависимость на database
+    }, [editId, database]),
   );
 
   const resetForm = () => {
@@ -99,6 +114,96 @@ export default function TaskFormScreen() {
     setLat("");
     setLon("");
     router.setParams({ editId: undefined });
+  };
+
+  // Открытие модалки карты
+  const openMapModal = async () => {
+    const currentLat = parseFloat(lat);
+    const currentLon = parseFloat(lon);
+
+    if (!isNaN(currentLat) && !isNaN(currentLon)) {
+      setTempCoords({ latitude: currentLat, longitude: currentLon });
+    } else {
+      try {
+        const { status: permStatus } =
+          await Location.requestForegroundPermissionsAsync();
+
+        if (permStatus === "granted") {
+          // Сначала пробуем взять последние известные координаты (работает мгновенно)
+          let location = await Location.getLastKnownPositionAsync({});
+
+          if (!location) {
+            // Если их нет, запрашиваем текущие с пониженной точностью (для быстрого ответа)
+            location = await Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Balanced,
+            });
+          }
+
+          if (location) {
+            setTempCoords({
+              latitude: location.coords.latitude,
+              longitude: location.coords.longitude,
+            });
+          } else {
+            setTempCoords({ latitude: DEFAULT_LAT, longitude: DEFAULT_LON });
+          }
+        } else {
+          setTempCoords({ latitude: DEFAULT_LAT, longitude: DEFAULT_LON });
+        }
+      } catch (error) {
+        // Если на эмуляторе выключен GPS, плавно падаем на дефолтные координаты
+        console.warn(
+          "GPS недоступен, использованы координаты по умолчанию:",
+          error,
+        );
+        setTempCoords({ latitude: DEFAULT_LAT, longitude: DEFAULT_LON });
+      }
+    }
+    setIsMapVisible(true);
+  };
+
+  // Выбор точки на карте
+  const handleMapPress = (e: MapPressEvent) => {
+    setTempCoords(e.nativeEvent.coordinate);
+  };
+
+  // Подтверждение выбора точки на карте
+  const handleConfirmMapSelection = async () => {
+    if (!tempCoords) return;
+
+    const selectedLat = tempCoords.latitude;
+    const selectedLon = tempCoords.longitude;
+
+    setLat(selectedLat.toFixed(6));
+    setLon(selectedLon.toFixed(6));
+
+    // Автоматическое определение адреса по координатам (обратное геокодирование)
+    try {
+      setIsGeocodingLoading(true);
+      const [geocode] = await Location.reverseGeocodeAsync({
+        latitude: selectedLat,
+        longitude: selectedLon,
+      });
+
+      if (geocode) {
+        const formattedAddress = [
+          geocode.street,
+          geocode.streetNumber,
+          geocode.city,
+        ]
+          .filter(Boolean)
+          .join(", ");
+
+        if (formattedAddress) {
+          setAddress(formattedAddress);
+        }
+      }
+    } catch (error) {
+      console.warn("Не удалось автоматически определить адрес:", error);
+    } finally {
+      setIsGeocodingLoading(false);
+      setIsMapVisible(false);
+    }
   };
 
   const handlePickerValueChange = (event: any, selectedDate?: Date) => {
@@ -192,14 +297,13 @@ export default function TaskFormScreen() {
       },
       attachments,
       status,
-      syncStatus: "Pending Sync", // Учитываем, что в API.ts мы переписали типы на SyncStatus
+      syncStatus: "Pending Sync",
     };
 
     try {
       setIsNetworkLoading(true);
 
       if (isEditMode) {
-        // Режим Редактирования (передаем database)
         await updateTask(database, taskData);
 
         await insertLog(database, {
@@ -222,7 +326,6 @@ export default function TaskFormScreen() {
           await updateTaskSyncStatus(database, taskData.id, "Sync Failed");
         }
       } else {
-        // Режим Создания (передаем database)
         await insertTask(database, taskData);
 
         await insertLog(database, {
@@ -238,7 +341,7 @@ export default function TaskFormScreen() {
           await scheduleTaskNotification(
             serverId,
             taskData.title,
-            taskData.dueDate, // Гарантируем, что передаем объект Date
+            taskData.dueDate,
             isDemoMode,
           );
           await updateTaskSyncStatus(database, serverId, "Synced");
@@ -283,7 +386,6 @@ export default function TaskFormScreen() {
       style={styles.container}
       contentContainerStyle={styles.contentContainer}
     >
-      {/* Оверлей загрузки перекрывает экран при синхронизации */}
       {isNetworkLoading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#3498db" />
@@ -322,11 +424,17 @@ export default function TaskFormScreen() {
         style={[styles.input, errors.address ? styles.inputError : null]}
         value={address}
         onChangeText={setAddress}
-        placeholder="Укажите адрес вручную"
+        placeholder="Укажите адрес вручную или выберите на карте"
       />
       {errors.address && <Text style={styles.errorText}>{errors.address}</Text>}
 
-      <Text style={styles.label}>Координаты (необязательно)</Text>
+      <View style={styles.locationHeaderRow}>
+        <Text style={styles.label}>Координаты (необязательно)</Text>
+        <TouchableOpacity style={styles.mapButtonInline} onPress={openMapModal}>
+          <Text style={styles.mapButtonInlineText}>🗺️ Выбрать на карте</Text>
+        </TouchableOpacity>
+      </View>
+
       <View style={styles.rowGap}>
         <TextInput
           style={[styles.input, { flex: 1 }]}
@@ -435,6 +543,61 @@ export default function TaskFormScreen() {
           {isEditMode ? "Сохранить изменения" : "Создать задачу"}
         </Text>
       </TouchableOpacity>
+
+      {/* Модальное окно выбора точки на карте */}
+      <Modal
+        visible={isMapVisible}
+        animationType="slide"
+        onRequestClose={() => setIsMapVisible(false)}
+      >
+        <View style={styles.modalContainer}>
+          {tempCoords && (
+            <MapView
+              style={styles.mapView}
+              initialRegion={{
+                latitude: tempCoords.latitude,
+                longitude: tempCoords.longitude,
+                latitudeDelta: 0.01,
+                longitudeDelta: 0.01,
+              }}
+              onPress={handleMapPress}
+            >
+              <Marker
+                coordinate={tempCoords}
+                draggable
+                onDragEnd={(e) => setTempCoords(e.nativeEvent.coordinate)}
+              />
+            </MapView>
+          )}
+
+          <View style={styles.mapControls}>
+            <Text style={styles.coordsHintText}>
+              Координаты: {tempCoords?.latitude.toFixed(6)},{" "}
+              {tempCoords?.longitude.toFixed(6)}
+            </Text>
+            <View style={styles.modalButtonsRow}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.cancelModalButton]}
+                onPress={() => setIsMapVisible(false)}
+              >
+                <Text style={styles.cancelModalButtonText}>Отмена</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalButton, styles.confirmModalButton]}
+                onPress={handleConfirmMapSelection}
+                disabled={isGeocodingLoading}
+              >
+                {isGeocodingLoading ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.confirmModalButtonText}>Подтвердить</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -461,6 +624,19 @@ const styles = StyleSheet.create({
   textArea: { minHeight: 80, textAlignVertical: "top" },
   errorText: { color: "#e74c3c", fontSize: 12, marginTop: 4 },
   rowGap: { flexDirection: "row", gap: 10 },
+  locationHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 10,
+  },
+  mapButtonInline: {
+    backgroundColor: "#e8f4fd",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  mapButtonInlineText: { color: "#3498db", fontWeight: "600", fontSize: 13 },
   dateButton: {
     backgroundColor: "#eef2f7",
     padding: 14,
@@ -525,4 +701,31 @@ const styles = StyleSheet.create({
     color: "#333",
     fontWeight: "600",
   },
+
+  // Модалка карты
+  modalContainer: { flex: 1 },
+  mapView: { flex: 1 },
+  mapControls: {
+    padding: 16,
+    backgroundColor: "#fff",
+    borderTopWidth: 1,
+    borderColor: "#eee",
+  },
+  coordsHintText: {
+    textAlign: "center",
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 12,
+  },
+  modalButtonsRow: { flexDirection: "row", gap: 12 },
+  modalButton: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  cancelModalButton: { backgroundColor: "#eee" },
+  cancelModalButtonText: { color: "#333", fontWeight: "600" },
+  confirmModalButton: { backgroundColor: "#3498db" },
+  confirmModalButtonText: { color: "#fff", fontWeight: "600" },
 });
